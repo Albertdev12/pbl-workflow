@@ -45,16 +45,16 @@
   <h1>📊 模拟证券投资大赛</h1>
   <div class="sub" id="asOf">加载中…</div>
 
-  <details id="cfgBox" open>
-    <summary>⚙ 数据源设置（首次使用填一次）</summary>
+  <details id="cfgBox">
+    <summary>⚙ 数据源设置（已内置默认地址，通常无需修改）</summary>
     <div class="card">
-      <div class="muted">填入你的 GitHub 仓库仪表盘数据地址（README_CLOUD 第4步会生成），例如：<br>
-      https://raw.githubusercontent.com/用户名/仓库名/main/data/dashboard/</div>
+      <div class="muted">数据地址(JSON目录)。备选（国内更快）：https://cdn.jsdelivr.net/gh/Albertdev12/pbl-workflow@main/data/dashboard/</div>
       <input id="base" placeholder="数据地址(JSON目录)">
       <input id="repo" placeholder="仓库（可选，用于远程触发）：用户名/仓库名">
       <button onclick="saveCfg()">保存并刷新</button>
       <button class="ghost" onclick="loadData()">立即刷新</button>
-      <div class="muted" style="margin-top:8px">数据由 GitHub Actions 云端每交易日 14:00/16:00 自动更新（电脑无需开机）。</div>
+      <button class="ghost" onclick="resetBase()">恢复默认地址</button>
+      <div class="muted" id="cfgStatus" style="margin-top:8px">数据由 GitHub Actions 云端每交易日 14:00/16:00 自动更新（电脑无需开机）。</div>
     </div>
   </details>
 
@@ -100,20 +100,38 @@
 
 <script>
 const $=id=>document.getElementById(id);
-const base=()=> (localStorage.getItem("pbl_base")||"").trim();
+const DEFAULT_BASE="https://raw.githubusercontent.com/Albertdev12/pbl-workflow/main/data/dashboard/";
+let memBase=null;
+function norm(u){u=(u||"").trim();if(!u)return "";if(!/\/$/.test(u))u+="/";return u;}
+function getBase(){
+  try{const q=new URLSearchParams(location.search).get("src");if(q)return norm(q);}catch(e){}
+  try{const v=localStorage.getItem("pbl_base");if(v)return norm(v);}catch(e){}
+  if(memBase)return norm(memBase);
+  return norm(DEFAULT_BASE);
+}
+function setStatus(msg,isErr){const s=$("cfgStatus");s.textContent=msg;s.style.color=isErr?"#ff8f8f":"#8b98ad";}
+function base(){return getBase();}
 const wan=v=>(v/10000).toFixed(2);
 const sign=v=>(v>0?"+":"")+(+v).toFixed(2);
 const cls=v=>v>0?"up":(v<0?"dn":"");
 const fmt=n=>n.toLocaleString("zh-CN");
 
 function saveCfg(){
-  localStorage.setItem("pbl_base",$("base").value.trim());
-  localStorage.setItem("pbl_repo",$("repo").value.trim());
+  const v=norm($("base").value);
+  try{localStorage.setItem("pbl_base",v);}catch(e){memBase=v;}
+  try{localStorage.setItem("pbl_repo",$("repo").value.trim());}catch(e){}
+  setStatus(v?("已保存，正在加载 "+v):"地址为空，使用默认地址加载…");
+  loadData();
+}
+function resetBase(){
+  try{localStorage.removeItem("pbl_base");}catch(e){}
+  memBase=null;$("base").value=DEFAULT_BASE;
+  setStatus("已恢复默认地址，正在加载…");
   loadData();
 }
 function loadCfg(){
-  $("base").value=localStorage.getItem("pbl_base")||"";
-  $("repo").value=localStorage.getItem("pbl_repo")||"";
+  $("base").value=getBase();
+  try{$("repo").value=localStorage.getItem("pbl_repo")||"";}catch(e){}
 }
 async function jget(name){
   const u=base()+name+"?t="+Date.now();
@@ -122,16 +140,19 @@ async function jget(name){
   return r.json();
 }
 function loadData(){
-  if(!base()){$("asOf").textContent="请先在上方填入数据地址";return;}
-  $("cfgBox").open=false;
-  $("asOf").textContent="加载中…";
+  const b=base();
+  if(!b){$("asOf").textContent="未配置数据地址";return;}
+  setStatus("正在从 "+b+" 加载数据…");
   Promise.all([
     jget("summary.json").catch(e=>({err:e.message})),
     jget("nav.json").catch(e=>null),
     jget("decisions.json").catch(e=>null),
     jget("pool.json").catch(e=>null),
     jget("market.json").catch(e=>null),
-  ]).then(render);
+  ]).then(r=>{render(r);
+    if(r[0].err)setStatus("加载失败："+r[0].err+"。请检查地址（应以 /data/dashboard/ 结尾），或点“恢复默认地址”；国内网络可换 jsDelivr 备选地址",true);
+    else setStatus("加载成功（"+b+"）");
+  });
 }
 function render([s,nav,decs,pool,mkt]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
