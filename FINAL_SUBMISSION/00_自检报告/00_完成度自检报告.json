@@ -1,0 +1,82 @@
+{
+  "timestamp": "2026-09-05 19:00:58",
+  "completion": 100,
+  "total_checks": 18,
+  "passed": 18,
+  "missing": [],
+  "ready_for_submission": true,
+  "detail": [
+    {
+      "check": "是否完成市场观察记录",
+      "ok": true
+    },
+    {
+      "check": "候选池是否为5-10只",
+      "ok": true
+    },
+    {
+      "check": "候选池是否含代码/行业/纳入原因/初步判断/风险/信息来源",
+      "ok": true
+    },
+    {
+      "check": "是否有基本面分析记录",
+      "ok": true
+    },
+    {
+      "check": "是否有技术分析记录",
+      "ok": true
+    },
+    {
+      "check": "是否生成初始投资方案",
+      "ok": true
+    },
+    {
+      "check": "是否有投资决策记录",
+      "ok": true
+    },
+    {
+      "check": "决策记录是否含基本面依据/技术面依据/市场依据/风险判断",
+      "ok": true
+    },
+    {
+      "check": "决策是否全部通过交易前规则校验",
+      "ok": true
+    },
+    {
+      "check": "是否有AI使用记录（Prompt→输出→核验→人工判断→采用）",
+      "ok": true
+    },
+    {
+      "check": "人工判断是否已确认（confirmations.csv）",
+      "ok": true
+    },
+    {
+      "check": "是否生成交易日志与盈亏归因",
+      "ok": true
+    },
+    {
+      "check": "是否生成策略调整记录",
+      "ok": true
+    },
+    {
+      "check": "是否生成中期路演PPT",
+      "ok": true
+    },
+    {
+      "check": "是否生成投资总结报告",
+      "ok": true
+    },
+    {
+      "check": "是否生成市场观察/候选池/技术分析/AI记录表格",
+      "ok": true
+    },
+    {
+      "check": "每两周至少1笔有效交易（首月内）",
+      "ok": true
+    },
+    {
+      "check": "单只持仓未超过30%",
+      "ok": true
+    }
+  ]
+}

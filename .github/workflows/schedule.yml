@@ -1,0 +1,44 @@
+name: PBL定时运行
+on:
+  schedule:
+    - cron: "0 6 * * 1-5"   # 北京时间 周一至周五 14:00 盘中风险监控
+    - cron: "0 8 * * 1-5"   # 北京时间 周一至周五 16:00 收盘全流程
+    - cron: "0 2 * * 6"     # 北京时间 周六 10:00 周报
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 运行任务
+        type: choice
+        options: [eod, riskwatch, weekly, report, validate]
+        default: eod
+permissions:
+  contents: write
+concurrency:
+  group: pbl-run
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 选择任务
+        run: |
+          if [ -n "${{ inputs.task }}" ]; then
+            echo "TASK=${{ inputs.task }}" >> $GITHUB_ENV
+          elif [ "$(date +%u)" = "6" ]; then
+            echo "TASK=weekly" >> $GITHUB_ENV
+          elif [ "$(date +%H)" = "06" ]; then
+            echo "TASK=riskwatch" >> $GITHUB_ENV
+          else
+            echo "TASK=eod" >> $GITHUB_ENV
+          fi
+      - name: 运行流水线
+        run: python cloud_run.py $TASK

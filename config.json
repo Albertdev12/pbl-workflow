@@ -1,0 +1,46 @@
+{
+  "course": {
+    "course_name": "证券期货操作实验",
+    "project_name": "模拟证券投资大赛",
+    "platform": "同花顺模拟炒股",
+    "term": "2026至2027学年 秋季学期",
+    "weeks": "第2周至第14周",
+    "start_date": "2026-09-07",
+    "end_date": "2026-12-11"
+  },
+  "strategy": {
+    "initial_capital": 5000000,
+    "max_single_position_pct": 0.30,
+    "min_cash_pct": 0.20,
+    "target_single_weight": 0.24,
+    "take_profit_pct": 0.09,
+    "stop_loss_pct": 0.08,
+    "min_trades_per_2weeks": 1,
+    "max_batch_build": 3,
+    "min_candidates": 6,
+    "max_candidates": 8,
+    "min_buy_score": 60,
+    "trade_execution": "auto",
+    "market_benchmark": "1.000300"
+  },
+  "universe": [
+    {"code": "510300", "name": "沪深300ETF", "kind": "etf", "industry": "宽基指数", "secid": "1.510300"},
+    {"code": "588000", "name": "科创50ETF", "kind": "etf", "industry": "科技", "secid": "1.588000"},
+    {"code": "600519", "name": "贵州茅台", "kind": "stock", "industry": "白酒", "secid": "1.600519"},
+    {"code": "300750", "name": "宁德时代", "kind": "stock", "industry": "新能源电池", "secid": "0.300750"},
+    {"code": "600036", "name": "招商银行", "kind": "stock", "industry": "银行", "secid": "1.600036"},
+    {"code": "600900", "name": "长江电力", "kind": "stock", "industry": "电力", "secid": "1.600900"},
+    {"code": "000333", "name": "美的集团", "kind": "stock", "industry": "家电", "secid": "0.000333"},
+    {"code": "601012", "name": "隆基绿能", "kind": "stock", "industry": "光伏", "secid": "1.601012"},
+    {"code": "600276", "name": "恒瑞医药", "kind": "stock", "industry": "医药", "secid": "1.600276"},
+    {"code": "002475", "name": "立讯精密", "kind": "stock", "industry": "消费电子", "secid": "0.002475"},
+    {"code": "601899", "name": "紫金矿业", "kind": "stock", "industry": "有色金属", "secid": "1.601899"},
+    {"code": "601318", "name": "中国平安", "kind": "stock", "industry": "保险", "secid": "1.601318"}
+  ],
+  "indices": [
+    {"code": "1.000001", "name": "上证指数"},
+    {"code": "0.399001", "name": "深证成指"},
+    {"code": "1.000300", "name": "沪深300"},
+    {"code": "1.000688", "name": "科创50"}
+  ]
+}

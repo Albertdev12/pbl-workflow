@@ -1,0 +1,7 @@
+requests
+pandas
+numpy
+openpyxl
+python-docx
+python-pptx
+matplotlib
