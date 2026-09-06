@@ -1,10 +1,12 @@
 {
-  "timestamp": "2026-09-06 01:51:50",
-  "completion": 100,
+  "timestamp": "2026-09-06 12:38:18",
+  "completion": 94,
   "total_checks": 18,
-  "passed": 18,
-  "missing": [],
-  "ready_for_submission": true,
+  "passed": 17,
+  "missing": [
+    "每两周至少1笔有效交易（首月内）"
+  ],
+  "ready_for_submission": false,
   "detail": [
     {
       "check": "是否完成市场观察记录",
@@ -72,7 +74,7 @@
     },
     {
       "check": "每两周至少1笔有效交易（首月内）",
-      "ok": true
+      "ok": false
     },
     {
       "check": "单只持仓未超过30%",
