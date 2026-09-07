@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 
 # 统一输出编码，保证 run.log 为 UTF-8
 for _s in (sys.stdout, sys.stderr):
@@ -78,6 +79,40 @@ def data_staleness_check():
 def last_trading_date():
     df = kline("1.000001", beg="20250601")
     return df["date"].iloc[-1]
+
+
+def _expected_trading_date():
+    """预期的最新交易日：工作日应更新到当日；周六周报应更新到周五；周日不用运行。"""
+    today = dt.date.today()
+    wd = today.weekday()
+    expected = today if wd < 5 else today - dt.timedelta(days=1 if wd == 5 else 2)
+    return today, expected
+
+
+def data_freshness():
+    """返回 (最近交易日, 是否明显陈旧)。"""
+    last = last_trading_date()
+    _, expected = _expected_trading_date()
+    return last, last < expected.isoformat()
+
+
+def _refresh_if_stale():
+    """收盘数据自愈：若行情落后于应有最新交易日（数据源瞬时502/超时），隔60秒重试最多3次。"""
+    last, stale = data_freshness()
+    if not stale:
+        return last
+    _, expected = _expected_trading_date()
+    print(f"[DATA_STALE] 行情停留在 {last}，预期应更新到 {expected.isoformat()}；"
+          "疑似数据源故障，60秒后重试（最多3次）...")
+    for i in range(3):
+        time.sleep(60)
+        last, stale = data_freshness()
+        print(f"[DATA_STALE] 重试{i + 1}/3：行情仍为 {last}")
+        if not stale:
+            print(f"[数据恢复] 行情已更新至 {last}")
+            return last
+    print(f"[DATA_STALE] 重试结束，将使用 {last} 的缓存数据继续（已标记陈旧）")
+    return last
 
 
 def benchmark_pct_since(date0):
@@ -147,7 +182,7 @@ def market_observe(date):
 
 # ---------------------------------------------------------------- 每日主流程
 def run_daily(only_report=False):
-    date = last_trading_date()
+    date = last_trading_date() if only_report else _refresh_if_stale()
     print(f"[工作流] 数据截止交易日: {date}")
     data_staleness_check()
     set_state("DATA_COLLECTION")

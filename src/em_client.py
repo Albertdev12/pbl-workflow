@@ -49,6 +49,7 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1"):
     except Exception:
         if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
             df = pd.read_csv(cache, dtype={"date": str})
+            print(f"[DATA_STALE] 行情接口失败，回退使用本地缓存: {cache}")
             return df.sort_values("date").reset_index(drop=True)
         raise
     for c in df.columns:

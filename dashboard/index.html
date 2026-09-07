@@ -156,7 +156,8 @@ function loadData(){
 }
 function render([s,nav,decs,pool,mkt]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
-  $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at;
+  $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at+(s.data_stale?" · ⚠ 行情源故障，数据未更新到最新":"");
+                if(s.data_stale){ $("asOf").style.color="#c0392b"; }
   // 预警
   const alerts=(s.recent_alerts||[]).flatMap(a=>a.alerts||[]);
   $("alertBox").innerHTML=alerts.length

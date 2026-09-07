@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(BASE, "src"))
 
 from main import (CFG, run_daily, run_dailyreport, run_data, run_market,  # noqa: E402
                   run_pool, run_review, run_riskwatch, run_weekly,
-                  benchmark_pct_since, last_trading_date)
+                  benchmark_pct_since, last_trading_date, data_freshness)
 import portfolio as pf  # noqa: E402
 import records  # noqa: E402
 import validator  # noqa: E402
@@ -57,7 +57,7 @@ def _jdump(name, obj):
 
 def export_dashboard():
     os.makedirs(DASH, exist_ok=True)
-    date = last_trading_date()
+    date, data_stale = data_freshness()
     pool = records.latest_pool()
     acct = pf.replay(pf.read_trades(), CFG["strategy"]["initial_capital"])
     prices = {r["code"]: r["close"] for r in pool}
@@ -84,6 +84,7 @@ def export_dashboard():
 
     summary = {
         "as_of": date,
+        "data_stale": data_stale,
         "updated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "initial_capital": CFG["strategy"]["initial_capital"],
         "total_assets": total,
