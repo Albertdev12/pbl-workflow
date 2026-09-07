@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-09-06 12:38:18",
+  "timestamp": "2026-09-07 20:03:00",
   "completion": 94,
   "total_checks": 18,
   "passed": 17,
   "missing": [
-    "每两周至少1笔有效交易（首月内）"
+    "人工判断是否已确认（confirmations.csv）"
   ],
   "ready_for_submission": false,
   "detail": [
@@ -50,7 +50,7 @@
     },
     {
       "check": "人工判断是否已确认（confirmations.csv）",
-      "ok": true
+      "ok": false
     },
     {
       "check": "是否生成交易日志与盈亏归因",
@@ -74,7 +74,7 @@
     },
     {
       "check": "每两周至少1笔有效交易（首月内）",
-      "ok": false
+      "ok": true
     },
     {
       "check": "单只持仓未超过30%",
