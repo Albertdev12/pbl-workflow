@@ -101,7 +101,11 @@ def market_observe(date):
     sh = kline_until("1.000001", date).tail(6)
     turnover = float(sh["amount"].iloc[-1]) / 1e8  # 亿元
     avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
-    boards = industry_board_rank(15)
+    try:
+        boards = industry_board_rank(15)
+    except Exception as e:
+        print(f"  [警告] 板块涨幅榜获取失败: {e}")
+        boards = []
     hs300 = indices.get("沪深300", {})
     above_ma20 = False
     df300 = kline_until(CFG["strategy"]["market_benchmark"], date)
@@ -115,7 +119,9 @@ def market_observe(date):
     lead_names = {b["name"] for b in boards[:5]}
     watch_industries = {u["industry"] for u in CFG["universe"]}
     hit = lead_names & {w for w in watch_industries if len(w) >= 2}
-    if hit:
+    if not boards:
+        opp = "板块涨幅榜数据暂不可用（数据源波动），维持现有组合，等待评分触发。"
+    elif hit:
         opp = f"领涨方向（{'、'.join(list(hit))}）与团队关注行业重合，可在候选池中关注相关标的的回调低吸机会。"
     else:
         opp = f"当日领涨板块为{('、'.join(b['name'] for b in boards[:3]))}，与观察池重合度低，维持现有组合，等待评分触发。"

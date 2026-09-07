@@ -91,14 +91,29 @@ def snapshot(secid):
 
 
 # ---------------------------------------------------------------- 行业板块
+BOARD_CACHE = os.path.join(DATA_DIR, "board_rank_cache.json")
+
+
 def industry_board_rank(top=15):
-    """东财行业板块涨幅榜 [{name, pct, lead_stock}]"""
+    """东财行业板块涨幅榜 [{name, pct, lead_stock}]。接口失败时回退本地缓存，缓存也没有则返回空列表。"""
     url = "http://push2.eastmoney.com/api/qt/clist/get"
     params = dict(pn=1, pz=top, po=1, np=1, fltt=2, invt=2, fid="f3",
                   fs="m:90+t:2", fields="f3,f14,f136,f128")
-    j = _get(url, params)
-    diff = (j.get("data") or {}).get("diff") or []
-    return [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")} for d in diff]
+    try:
+        j = _get(url, params)
+        diff = (j.get("data") or {}).get("diff") or []
+        rows = [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")} for d in diff]
+        with open(BOARD_CACHE, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        return rows
+    except Exception as e:
+        if os.path.exists(BOARD_CACHE):
+            with open(BOARD_CACHE, encoding="utf-8") as f:
+                rows = json.load(f)
+            print(f"[DATA_STALE] 板块涨幅榜接口失败（{e}），改用本地缓存")
+            return rows
+        print(f"[DATA_STALE] 板块涨幅榜接口失败且无缓存（{e}），跳过")
+        return []
 
 
 # ---------------------------------------------------------------- 财务指标(F10)
