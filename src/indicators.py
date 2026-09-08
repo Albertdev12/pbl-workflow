@@ -43,8 +43,13 @@ def compute(df: pd.DataFrame) -> dict:
         diff = c.diff()
         up = diff.clip(lower=0).rolling(14).mean()
         dn = (-diff.clip(upper=0)).rolling(14).mean()
-        rsi = 100 - 100 / (1 + up / dn.replace(0, pd.NA))
-        out["rsi14"] = float(rsi.iloc[-1])
+        # 等价公式 100*up/(up+dn)：14日内无下跌日时 dn=0 → RSI=100（旧写法会产生 NaN 并抛 TypeError）
+        denom = up + dn
+        rsi = 100 * up / denom.replace(0, pd.NA)
+        val = rsi.iloc[-1]
+        if pd.isna(val):
+            val = 100.0 if float(up.iloc[-1] or 0) > 0 else 50.0
+        out["rsi14"] = float(val)
     # 支撑/压力：近60日高低点 + MA20/MA60
     w = df.tail(60)
     out["support_60d"] = float(w["low"].min())

@@ -42,6 +42,27 @@ def _market_basis(date):
     return "DATA_UNAVAILABLE"
 
 
+def _peak_since_open(code, secid, date, trades):
+    """当前持仓期间的最高价（移动止损用）。建仓日 = 该标的 shares 由 0 变正的那天。"""
+    shares, open_date = 0, None
+    for t in trades:
+        if t["code"] != code:
+            continue
+        if t["side"] == "买入":
+            if shares == 0:
+                open_date = t["date"]
+            shares += t["shares"]
+        else:
+            shares -= t["shares"]
+            if shares <= 0:
+                shares, open_date = 0, None
+    if not open_date:
+        return None
+    df = kline_until(secid, date)
+    df = df[df["date"] >= open_date]
+    return float(df["high"].max()) if len(df) else None
+
+
 def run_decision(date, pool, cfg, mode=None):
     """对 date（收盘后）生成决策。返回 decisions 列表。"""
     st = cfg["strategy"]
@@ -74,10 +95,15 @@ def run_decision(date, pool, cfg, mode=None):
         pnl_pct = price / pos["cost"] - 1 if pos["cost"] else 0.0
         reason = basis_tech = None
         action = None
-        if pnl_pct >= st["take_profit_pct"]:
-            action, reason = "卖出", f"止盈触发：浮盈{pnl_pct*100:.1f}% ≥ 止盈线{st['take_profit_pct']*100:.0f}%"
-        elif pnl_pct <= -st["stop_loss_pct"]:
+        trail = st.get("trailing_stop_pct")
+        peak = _peak_since_open(code, universe.get(code, {}).get("secid", code), date, trades) if trail else None
+        if pnl_pct <= -st["stop_loss_pct"]:
             action, reason = "卖出", f"止损触发：浮亏{pnl_pct*100:.1f}% ≤ 止损线-{st['stop_loss_pct']*100:.0f}%"
+        elif trail and peak and price <= peak * (1 - trail):
+            action, reason = "卖出", (f"移动止损触发：自持仓最高价{peak:.2f}回撤{(1 - price / peak) * 100:.1f}% "
+                                      f"≥ {trail*100:.0f}%（当前浮盈{pnl_pct*100:+.1f}%）")
+        elif not trail and pnl_pct >= st["take_profit_pct"]:
+            action, reason = "卖出", f"止盈触发：浮盈{pnl_pct*100:.1f}% ≥ 止盈线{st['take_profit_pct']*100:.0f}%"
         else:
             u = universe.get(code, {})
             df = kline_until(u.get("secid", code), date)
@@ -96,7 +122,8 @@ def run_decision(date, pool, cfg, mode=None):
                 "code": code, "name": pos.get("name", code), "side": "卖出",
                 "price": price, "shares": shares,
                 "reason": reason,
-                "fund_basis": "持有期内基本面未见恶化，触发为价格纪律" if "止盈" in (reason or "") else "基本面/价格双重纪律",
+                "fund_basis": ("持有期内基本面未见恶化，触发为价格纪律"
+                               if ("止盈" in (reason or "") or "移动止损" in (reason or "")) else "基本面/价格双重纪律"),
                 "tech_basis": basis_tech or f"浮盈{pnl_pct*100:.1f}%触发价格纪律",
                 "risk_judge": "锁定收益/防止进一步亏损，执行交易纪律",
             })
@@ -121,7 +148,9 @@ def run_decision(date, pool, cfg, mode=None):
             continue
         pos = acct["positions"].get(code)
         weight_now = (pos["shares"] * prices.get(code, pos["cost"]) / total) if pos else 0.0
-        target_amt = total * st["target_single_weight"]
+        tgt_w = (st.get("etf_target_weight", st["target_single_weight"])
+                 if r.get("kind") == "etf" else st["target_single_weight"])
+        target_amt = total * tgt_w
         budget = min(target_amt - weight_now * total, cash_now - total * st["min_cash_pct"])
         if budget < total * 0.05:
             continue
@@ -138,7 +167,7 @@ def run_decision(date, pool, cfg, mode=None):
             "code": code, "name": r["name"], "side": "买入",
             "price": r["close"], "shares": shares,
             "reason": f"综合评分{r['composite']}分（基本面{r['fin_score']}/技术面{r['tech_score']}）达标，"
-                      f"目标仓位{st['target_single_weight']*100:.0f}%，买入后占比{weight_after*100:.1f}%",
+                      f"目标仓位{tgt_w*100:.0f}%，买入后占比{weight_after*100:.1f}%",
             "fund_basis": "；".join(r["fin_reasons"][:3]) if r["fin_reasons"] else r["fin_judgment"],
             "tech_basis": f"{r['tech_judgment']}。指标信号：{sig_all}",
             "risk_judge": "；".join(r["risks"][:2]),

@@ -2,8 +2,11 @@ name: PBL定时运行
 on:
   schedule:
     - cron: "0 6 * * 1-5"   # 北京时间 周一至周五 14:00 盘中风险监控
+    - cron: "25 6 * * 1-5"  # 北京时间 14:25 冗余补跑（GitHub定时投递可能延迟/漏跑）
     - cron: "0 8 * * 1-5"   # 北京时间 周一至周五 16:00 收盘全流程
+    - cron: "25 8 * * 1-5"  # 北京时间 16:25 冗余补跑（幂等，不会重复生成决策）
     - cron: "0 2 * * 6"     # 北京时间 周六 10:00 周报
+    - cron: "25 2 * * 6"    # 北京时间 周六 10:25 冗余补跑
   workflow_dispatch:
     inputs:
       task:
@@ -13,6 +16,7 @@ on:
         default: eod
 permissions:
   contents: write
+  issues: write
 concurrency:
   group: pbl-run
   cancel-in-progress: false
@@ -43,3 +47,11 @@ jobs:
           fi
       - name: 运行流水线
         run: python cloud_run.py $TASK
+      - name: 失败告警（自动开Issue）
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "⚠️ 流水线失败 $(TZ=Asia/Shanghai date +%F' '%H:%M)" \
+            --body "任务 $TASK 运行失败，请查看 Actions 日志：https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} （常见原因：东财数据源波动、依赖安装失败、代码异常）" || echo "issue 创建失败（不影响主流程）"

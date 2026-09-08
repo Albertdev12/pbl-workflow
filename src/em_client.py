@@ -8,11 +8,59 @@ import pandas as pd
 import requests
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+TENCENT_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+TENCENT_QUOTE = "https://qt.gtimg.cn/q="
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 KLINE_DIR = os.path.join(DATA_DIR, "kline")
 FIN_DIR = os.path.join(DATA_DIR, "fin")
 for _d in (KLINE_DIR, FIN_DIR):
     os.makedirs(_d, exist_ok=True)
+
+
+def _tencent_symbol(secid):
+    market, code = secid.split(".")
+    return ("sh" if market == "1" else "sz") + code
+
+
+def _tencent_kline(secid, count=420):
+    """备用数据源（腾讯）前复权日K；成交额以 收盘价×成交量×100 估算（腾讯日K不提供成交额）。"""
+    sym = _tencent_symbol(secid)
+    r = requests.get(TENCENT_KLINE, params={"param": f"{sym},day,,,{count},qfq"},
+                     headers=HEADERS, timeout=12)
+    r.raise_for_status()
+    node = (r.json().get("data") or {}).get(sym) or {}
+    rows = node.get("qfqday") or node.get("day") or []
+    if not rows:
+        raise ValueError("tencent kline empty")
+    df = pd.DataFrame([x[:6] for x in rows],
+                      columns=["date", "open", "close", "high", "low", "volume"])
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["amount"] = df["volume"] * 100 * df["close"]
+    return df[["date", "open", "close", "high", "low", "volume", "amount"]]
+
+
+def _tencent_snapshot(secid):
+    """备用数据源（腾讯）实时快照；PE/PB/市值等东财独有字段返回 None。"""
+    sym = _tencent_symbol(secid)
+    r = requests.get(TENCENT_QUOTE + sym, headers=HEADERS, timeout=12)
+    r.raise_for_status()
+    raw = r.content.decode("gbk", errors="replace")
+    if "~" not in raw:
+        raise ValueError("tencent quote empty")
+    f = raw.split('"')[1].split("~")
+
+    def num(i):
+        try:
+            return float(f[i]) if f[i] not in ("", "-") else None
+        except Exception:
+            return None
+
+    return {"code": f[2], "name": f[1], "price": num(3), "pct_chg": num(32),
+            "pe_ttm": None, "pb": None, "total_mv": None, "float_mv": None,
+            "turnover_pct": num(38), "volume_ratio": num(49),
+            "high": num(33), "low": num(34), "open": num(5), "prev_close": num(4)}
 
 
 def _get(url, params, timeout=12, retries=3):
@@ -46,12 +94,16 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1"):
         d = j.get("data") or {}
         rows = [x.split(",") for x in d.get("klines", [])]
         df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
-    except Exception:
-        if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
-            df = pd.read_csv(cache, dtype={"date": str})
-            print(f"[DATA_STALE] 行情接口失败，回退使用本地缓存: {cache}")
-            return df.sort_values("date").reset_index(drop=True)
-        raise
+    except Exception as em_err:
+        try:  # 第二数据源：腾讯
+            df = _tencent_kline(secid)
+            print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err)[:50]}），已切换腾讯数据源")
+        except Exception:
+            if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
+                df = pd.read_csv(cache, dtype={"date": str})
+                print(f"[DATA_STALE] 双数据源均失败，回退本地缓存: {cache}")
+                return df.sort_values("date").reset_index(drop=True)
+            raise
     for c in df.columns:
         if c != "date":
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -77,7 +129,11 @@ def snapshot(secid):
     url = "http://push2.eastmoney.com/api/qt/stock/get"
     params = dict(secid=secid, invt="2", fltt="2",
                   fields="f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f62,f84,f116,f117,f162,f164,f167,f168,f169,f170,f171,f292")
-    j = _get(url, params)
+    try:
+        j = _get(url, params)
+    except Exception as em_err:
+        print(f"[DATA_FALLBACK] 东财快照失败（{str(em_err)[:50]}），已切换腾讯数据源")
+        return _tencent_snapshot(secid)
     d = j.get("data") or {}
     out = {
         "code": d.get("f57"), "name": d.get("f58"),
