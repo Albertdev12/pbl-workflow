@@ -4,7 +4,8 @@
 用法（PowerShell）:
     $env:GH_TOKEN = "<你的GitHub令牌>"      # 需要 Actions: Read and write
     python tools/gh_run.py trigger eod      # 触发一次 eod
-    python tools/gh_run.py wait             # 等待最近一次运行结束并打印结论
+    python tools/gh_run.py status           # 查看最近一次运行状态
+    python tools/gh_run.py wait             # 阻塞等待最近一次运行结束并打印每一步结论
     python tools/gh_run.py run eod          # 触发并等待（默认最长20分钟）
 
 令牌也可以放到环境变量 PBL_TOKEN；仓库默认 Albertdev12/pbl-workflow，
@@ -81,7 +82,8 @@ def show_jobs(run_id=None):
 
 
 def latest_run():
-    st, body = _req(f"/repos/{REPO}/actions/runs?per_page=10")
+    # 只取本工作流的运行（仓库里还有 GitHub Pages 等其他工作流，避免抓错）
+    st, body = _req(f"/repos/{REPO}/actions/workflows/{WORKFLOW}/runs?per_page=10")
     if st != 200 or not isinstance(body, dict):
         print(f"[查询失败] HTTP {st}: {body}")
         return None
@@ -128,8 +130,10 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "trigger":
         trigger(sys.argv[2] if len(sys.argv) > 2 else "eod")
-    elif cmd == "wait":
+    elif cmd == "status":
         describe(latest_run())
+    elif cmd == "wait":
+        wait_run()
     elif cmd == "jobs":
         show_jobs(int(sys.argv[2]) if len(sys.argv) > 2 else None)
     elif cmd == "run":
