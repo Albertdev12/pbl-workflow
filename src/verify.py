@@ -18,10 +18,15 @@ HORIZONS = (5, 10, 20)
 BENCH = "1.000300"
 
 
+def _is_index(secid):
+    """指数代码（1.000xxx / 0.399xxx）：备用数据源下成交额口径不同，需要显式标记。"""
+    return secid.startswith(("1.000", "0.399"))
+
+
 def _load_series(secid):
     """取全量日K（含最新），用于计算决策日之后的走势。"""
     try:
-        df = kline(secid)
+        df = kline(secid, is_index=_is_index(secid))
         return df.sort_values("date").reset_index(drop=True)
     except Exception:
         return None

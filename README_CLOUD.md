@@ -48,6 +48,61 @@ GitHub Actions 云端（免费，24小时在线）
   请把仓库改为 Private（Settings → General → Danger Zone → Change visibility），并在仪表盘用带令牌的 raw 地址读取。
 - **成本**：全部免费（公开仓库 Actions 每月2000分钟额度，本项目每天约3分钟，绰绰有余）。
 
+## 二点五、外部准时触发器（可选，解决 GitHub cron 延迟）
+
+GitHub 的定时任务可能延迟 5—30 分钟甚至漏投递。工作流里已经加了 14:25 / 16:25 / 10:25 冗余补跑，
+如果想更准，可以再挂一个外部定时器（免费）：
+
+### 方案A：cron-job.org（推荐，5 分钟搞定）
+
+1. 注册 https://cron-job.org → Create cronjob。
+2. 填写：
+   - **Title**：PBL 16:00 收盘全流程
+   - **URL**：`https://api.github.com/repos/Albertdev12/pbl-workflow/actions/workflows/schedule.yml/dispatches`
+   - **Schedule**：Every day 16:00（时区选 Asia/Shanghai；周末可只留周六 10:00 的 weekly 任务）
+   - **Request method**：POST
+   - **Headers**（逐个添加）：
+     - `Authorization: Bearer <细粒度令牌>`
+     - `Accept: application/vnd.github+json`
+     - `Content-Type: application/json`
+     - `User-Agent: pbl-cron`
+   - **Request body**：`{"ref":"main","inputs":{"task":"eod"}}`
+3. 保存后可点 "TEST RUN"，看到 HTTP 204 就是成功。
+4. 同理再加两个：14:00 用 `{"task":"riskwatch"}`，周六 10:00 用 `{"task":"weekly"}`。
+
+> 令牌：GitHub → Settings → Developer settings → Fine-grained tokens → 只授权本仓库 →
+> 权限 `Actions: Read and write`。（触发用这个就够；手机回填成交价还需要 `Contents: Read and write`。）
+
+### 方案B：Cloudflare Worker + Cron Triggers（进阶）
+
+```js
+export default {
+  async scheduled(event, env, ctx) {
+    await fetch("https://api.github.com/repos/Albertdev12/pbl-workflow/actions/workflows/schedule.yml/dispatches", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + env.GH_TOKEN,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "pbl-worker",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ref: "main", inputs: { task: "eod" } }),
+    });
+  },
+};
+```
+
+在 Worker 设置里加环境变量 `GH_TOKEN`，再配 Cron Trigger `0 8 * * 1-5`（UTC，等于北京时间 16:00）。
+
+### 本地触发/观察（不需要浏览器）
+
+```powershell
+$env:GH_TOKEN = "<令牌>"
+python tools/gh_run.py trigger eod   # 触发
+python tools/gh_run.py wait          # 等待并打印每一步结论
+python tools/gh_run.py run weekly    # 触发并等待
+```
+
 ## 三、本地文件说明
 
 | 文件 | 作用 |

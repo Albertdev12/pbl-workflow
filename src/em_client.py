@@ -64,6 +64,30 @@ def _tencent_snapshot(secid):
             "high": num(33), "low": num(34), "open": num(5), "prev_close": num(4)}
 
 
+# ---------------------------------------------------------------- 主数据源熔断
+# 东财接口从境外机房经常 502/超时：每次调用都要重试+超时，十几只标的会拖到十几分钟。
+# 连续失败 2 次即认为主源不可用，本次运行后续请求直接走备用源（腾讯），大幅缩短运行时间。
+# 按接口类别分别熔断：日K(push2his) 与 快照/板块(push2) 是两个不同子域，互不牵连。
+_EM_STATE = {"kline": {"fails": 0, "down": False}, "quote": {"fails": 0, "down": False}}
+
+
+def em_available(kind="quote"):
+    return not _EM_STATE[kind]["down"]
+
+
+def _em_ok(kind="quote"):
+    _EM_STATE[kind]["fails"] = 0
+
+
+def _em_fail(kind, err):
+    st = _EM_STATE[kind]
+    st["fails"] += 1
+    if st["fails"] >= 2 and not st["down"]:
+        st["down"] = True
+        print(f"[DATA_FALLBACK] 东财{kind}接口连续失败（{str(err)[:60]}），"
+              "本次运行后续同类请求直接使用备用数据源")
+
+
 def _get(url, params, timeout=12, retries=3):
     last_err = None
     for i in range(retries):
@@ -91,16 +115,22 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
     params = dict(secid=secid, fields1="f1,f2,f3,f4,f5,f6",
                   fields2="f51,f52,f53,f54,f55,f56,f57", klt=klt, fqt=fqt, beg=beg, end=end)
     from_fallback = False
-    try:
-        j = _get(url, params)
-        d = j.get("data") or {}
-        rows = [x.split(",") for x in d.get("klines", [])]
-        df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
-    except Exception as em_err:
+    df, em_err = None, None
+    if em_available("kline"):
+        try:
+            j = _get(url, params)
+            d = j.get("data") or {}
+            rows = [x.split(",") for x in d.get("klines", [])]
+            df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
+            _em_ok("kline")
+        except Exception as e:
+            em_err = e
+            _em_fail("kline", e)
+    if df is None:
         try:  # 第二数据源：腾讯（只补缺口，不覆盖东财已有日期）
             df = _tencent_kline(secid, is_index=is_index)
             from_fallback = True
-            print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err)[:50]}），已切换腾讯数据源")
+            print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err or '主源已熔断')[:50]}），已切换腾讯数据源")
         except Exception:
             if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
                 df = pd.read_csv(cache, dtype={"date": str})
@@ -139,10 +169,16 @@ def snapshot(secid):
     url = "http://push2.eastmoney.com/api/qt/stock/get"
     params = dict(secid=secid, invt="2", fltt="2",
                   fields="f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f62,f84,f116,f117,f162,f164,f167,f168,f169,f170,f171,f292")
-    try:
-        j = _get(url, params)
-    except Exception as em_err:
-        print(f"[DATA_FALLBACK] 东财快照失败（{str(em_err)[:50]}），已切换腾讯数据源")
+    j, em_err = None, None
+    if em_available("quote"):
+        try:
+            j = _get(url, params)
+            _em_ok("quote")
+        except Exception as e:
+            em_err = e
+            _em_fail("quote", e)
+    if j is None:
+        print(f"[DATA_FALLBACK] 东财快照失败（{str(em_err or '主源已熔断')[:50]}），已切换腾讯数据源")
         return _tencent_snapshot(secid)
     d = j.get("data") or {}
     out = {
@@ -166,14 +202,21 @@ def industry_board_rank(top=15):
     url = "http://push2.eastmoney.com/api/qt/clist/get"
     params = dict(pn=1, pz=top, po=1, np=1, fltt=2, invt=2, fid="f3",
                   fs="m:90+t:2", fields="f3,f14,f136,f128")
+    if not em_available("quote"):
+        if os.path.exists(BOARD_CACHE):
+            with open(BOARD_CACHE, encoding="utf-8") as f:
+                return json.load(f)
+        return []
     try:
         j = _get(url, params)
         diff = (j.get("data") or {}).get("diff") or []
         rows = [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")} for d in diff]
         with open(BOARD_CACHE, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
+        _em_ok("quote")
         return rows
     except Exception as e:
+        _em_fail("quote", e)
         if os.path.exists(BOARD_CACHE):
             with open(BOARD_CACHE, encoding="utf-8") as f:
                 rows = json.load(f)

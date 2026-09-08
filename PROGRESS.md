@@ -108,7 +108,8 @@
 
 ### 后续增强（非阻塞）
 - [ ] 外部准时触发器（cron-job.org / Cloudflare Worker 调 `workflow_dispatch`），解决 GitHub cron 延迟
-- [ ] 观察池 12 → 20 只（提高候选池区分度）
+- [ ] 观察池 12 → 20 只：在 `config.json` 的 `universe` 追加 `{code,name,kind,industry,secid}`，
+      然后 `python main.py data`（抓缓存）→ `python backtest.py`（重新回测确认结论未变）→ `python main.py eod`
 - [ ] 决策后验证积累到 20+ 样本后，做一次"评分门槛 60 分是否合适"的复盘
 
 ## 9. 常用命令

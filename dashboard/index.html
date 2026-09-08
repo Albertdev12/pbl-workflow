@@ -265,7 +265,6 @@ function kpi(l,v,c){return '<div class="kpi"><div class="l">'+l+'</div><div clas
 function renderTodos(todos){
   const box=$("todoBox");
   if(!todos.length){box.innerHTML='<div class="muted">暂无待办</div>';return;}
-  const key="pbl_done_"+((todos[0]||{}).title||"");
   let done={};
   try{done=JSON.parse(localStorage.getItem("pbl_done")||"{}");}catch(e){done={};}
   box.innerHTML=todos.map((t,i)=>{
