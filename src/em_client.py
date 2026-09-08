@@ -22,8 +22,9 @@ def _tencent_symbol(secid):
     return ("sh" if market == "1" else "sz") + code
 
 
-def _tencent_kline(secid, count=420):
-    """备用数据源（腾讯）前复权日K；成交额以 收盘价×成交量×100 估算（腾讯日K不提供成交额）。"""
+def _tencent_kline(secid, count=420, is_index=False):
+    """备用数据源（腾讯）前复权日K。个股成交额按 收盘价×成交量(手)×100 估算；
+    指数没有可用成交额口径 → 标记 NaN（避免写入错误数字污染"两市成交额"）。"""
     sym = _tencent_symbol(secid)
     r = requests.get(TENCENT_KLINE, params={"param": f"{sym},day,,,{count},qfq"},
                      headers=HEADERS, timeout=12)
@@ -37,7 +38,7 @@ def _tencent_kline(secid, count=420):
     for c in df.columns:
         if c != "date":
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["amount"] = df["volume"] * 100 * df["close"]
+    df["amount"] = float("nan") if is_index else df["volume"] * 100 * df["close"]
     return df[["date", "open", "close", "high", "low", "volume", "amount"]]
 
 
@@ -83,7 +84,7 @@ def _get(url, params, timeout=12, retries=3):
 
 
 # ---------------------------------------------------------------- 日K线
-def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1"):
+def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=False):
     """日K线 -> DataFrame[date, open, close, high, low, volume, amount]。网络失败时回退本地缓存。"""
     cache = os.path.join(KLINE_DIR, f"{secid.replace('.', '_')}.csv")
     url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
@@ -96,7 +97,7 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1"):
         df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
     except Exception as em_err:
         try:  # 第二数据源：腾讯
-            df = _tencent_kline(secid)
+            df = _tencent_kline(secid, is_index=is_index)
             print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err)[:50]}），已切换腾讯数据源")
         except Exception:
             if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
@@ -111,14 +112,18 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1"):
     if os.path.exists(cache):
         old = pd.read_csv(cache, dtype={"date": str})
         df = pd.concat([old[~old["date"].isin(set(df["date"]))], df], ignore_index=True)
+        # 备用数据源下指数成交额缺失（NaN）→ 保留缓存中已有的真实成交额，避免污染"两市成交额"
+        if "amount" in df.columns:
+            amt_map = old.set_index("date")["amount"]
+            df["amount"] = df["amount"].fillna(df["date"].map(amt_map))
     df = df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
     df.to_csv(cache, index=False)
     return df
 
 
-def kline_until(secid, trade_date, lookback=260):
+def kline_until(secid, trade_date, lookback=260, is_index=False):
     """取 trade_date 当日（含）前 lookback 根日K，保证回测/决策不引入未来数据。"""
-    df = kline(secid)
+    df = kline(secid, is_index=is_index)
     df = df[df["date"] <= trade_date]
     return df.tail(lookback).reset_index(drop=True)
 

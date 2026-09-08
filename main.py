@@ -70,14 +70,14 @@ def data_staleness_check():
     today = dt.date.today()
     if today.weekday() >= 5:
         return
-    df = kline("1.000001", beg="20250601")
+    df = kline("1.000001", beg="20250601", is_index=True)
     if df["date"].iloc[-1] < today.isoformat() and dt.datetime.now().hour >= 16:
         print("  [DATA_STALE] 警告：今日为交易日且已过16:00，但行情数据仅更新到", df["date"].iloc[-1])
 
 
 # ---------------------------------------------------------------- 工具
 def last_trading_date():
-    df = kline("1.000001", beg="20250601")
+    df = kline("1.000001", beg="20250601", is_index=True)
     return df["date"].iloc[-1]
 
 
@@ -116,7 +116,7 @@ def _refresh_if_stale():
 
 
 def benchmark_pct_since(date0):
-    df = kline(CFG["strategy"]["market_benchmark"], beg="20250101")
+    df = kline(CFG["strategy"]["market_benchmark"], beg="20250101", is_index=True)
     df = df[df["date"] >= date0].reset_index(drop=True)
     if len(df) < 2:
         return None
@@ -127,15 +127,18 @@ def benchmark_pct_since(date0):
 def market_observe(date):
     indices = {}
     for idx in CFG["indices"]:
-        df = kline_until(idx["code"], date)
+        df = kline_until(idx["code"], date, is_index=True)
         if len(df) >= 2:
             indices[idx["name"]] = {
                 "close": float(df["close"].iloc[-1]),
                 "pct": (df["close"].iloc[-1] / df["close"].iloc[-2] - 1) * 100,
             }
-    sh = kline_until("1.000001", date).tail(6)
-    turnover = float(sh["amount"].iloc[-1]) / 1e8  # 亿元
-    avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
+    sh = kline_until("1.000001", date, is_index=True).tail(6)
+    if sh["amount"].notna().any():  # 备用数据源下指数成交额不可用 → 降级
+        turnover = float(sh["amount"].iloc[-1]) / 1e8  # 亿元
+        avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
+    else:
+        turnover = avg5 = None
     try:
         boards = industry_board_rank(15)
     except Exception as e:
@@ -143,14 +146,18 @@ def market_observe(date):
         boards = []
     hs300 = indices.get("沪深300", {})
     above_ma20 = False
-    df300 = kline_until(CFG["strategy"]["market_benchmark"], date)
+    df300 = kline_until(CFG["strategy"]["market_benchmark"], date, is_index=True)
     if len(df300) >= 20:
         ma20 = float(df300["close"].tail(20).mean())
         above_ma20 = float(df300["close"].iloc[-1]) > ma20
-    view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
-            f"{'站上' if above_ma20 else '跌破'}20日均线；两市成交额约{turnover:.0f}亿元，"
-            f"较前5日均量{'放大' if turnover > avg5 else '萎缩'}"
-            f"（前5日均值约{avg5:.0f}亿元），市场{'活跃度提升' if turnover > avg5 else '情绪偏谨慎'}。")
+    if turnover is None:
+        view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
+                f"{'站上' if above_ma20 else '跌破'}20日均线；成交额数据暂不可用（备用数据源口径）。")
+    else:
+        view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
+                f"{'站上' if above_ma20 else '跌破'}20日均线；两市成交额约{turnover:.0f}亿元，"
+                f"较前5日均量{'放大' if turnover > avg5 else '萎缩'}"
+                f"（前5日均值约{avg5:.0f}亿元），市场{'活跃度提升' if turnover > avg5 else '情绪偏谨慎'}。")
     lead_names = {b["name"] for b in boards[:5]}
     watch_industries = {u["industry"] for u in CFG["universe"]}
     hit = lead_names & {w for w in watch_industries if len(w) >= 2}
@@ -163,7 +170,7 @@ def market_observe(date):
     risks = []
     if hs300.get("pct", 0) <= -1.5:
         risks.append("沪深300单日跌幅超1.5%，警惕系统性回调，必要时降低仓位")
-    if turnover < avg5 * 0.8:
+    if turnover is not None and avg5 is not None and turnover < avg5 * 0.8:
         risks.append("量能持续萎缩，反弹持续性存疑")
     risks.append("个股业绩披露期业绩变脸风险；宏观消息面突发扰动")
     rec = {
