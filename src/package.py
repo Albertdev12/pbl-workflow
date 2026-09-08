@@ -26,6 +26,9 @@ MAP = {
     "13_": ("13_投资总结报告", None),
     "14_": ("14_交易复盘", None),
     "15_": ("15_工作日报", None),
+    "16_": ("16_报告素材包", None),
+    "18_": ("18_周会材料包", None),
+    "19_": ("19_决策后验证", None),
     "00_": ("00_自检报告", None),
 }
 
@@ -46,11 +49,13 @@ def build():
     # 图表与数据来源
     cfg = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
     src = {
-        "数据来源": "东方财富公开行情接口（push2his/push2/datacenter.eastmoney.com）",
-        "数据口径": "日线行情(前复权)、实时快照(PE/PB/市值)、F10主要财务指标、行业板块涨跌榜",
+        "数据来源": "主源：东方财富公开行情接口（push2his/push2/datacenter.eastmoney.com）；"
+                    "备用源：腾讯行情接口（web.ifzq.gtimg.cn / qt.gtimg.cn），主源失败时自动切换",
+        "数据口径": "日线行情(前复权)、实时快照(PE/PB/市值)、F10主要财务指标、行业板块涨跌榜；"
+                    "备用源只补主源缺失的日期，不覆盖已有口径，避免两套复权方式混用",
         "指标计算": "均线MA5/10/20/60、MACD(12,26,9)、RSI(14)、60日高低点支撑压力、量比，全部由Python计算",
         "核验方式": "可与同花顺APP个股页面交叉核对",
-        "采集日志": "data/fetch_log.jsonl（每次接口调用时间戳）",
+        "采集日志": "data/fetch_log.jsonl（每次接口调用时间戳）；data/verify_log.jsonl（决策后验证记录）",
         "课程规则": cfg["course"],
     }
     d = os.path.join(SUBMIT, "17_数据来源与说明")

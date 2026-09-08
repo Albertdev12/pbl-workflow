@@ -46,6 +46,19 @@ def append_trade(date, code, name, side, price, shares, decision_id="", source="
                                     round(price * shares, 2), decision_id, source, note])
 
 
+def write_trades(trades):
+    """整体写回账本（用于人工回填实际成交价等修正；调用方保证行内字段完整）。"""
+    with LOCK:
+        with open(TRADES_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(TRADE_FIELDS)
+            for t in sorted(trades, key=lambda x: (x["date"], x["code"], x["side"])):
+                w.writerow([t["date"], t["code"], t["name"], t["side"], t["price"], t["shares"],
+                            round(float(t.get("amount", t["price"] * t["shares"])), 2),
+                            t.get("decision_id", ""), t.get("source", "manual"), t.get("note", "")])
+    return TRADES_CSV
+
+
 def replay(trades, initial_capital):
     """重放交易流水 -> {cash, positions{code:{shares,cost}}, realized_by_code, fee}"""
     cash = float(initial_capital)

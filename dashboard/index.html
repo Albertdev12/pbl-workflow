@@ -36,6 +36,21 @@
   details{margin-bottom:12px} summary{cursor:pointer;color:var(--tx2);font-size:13px}
   .err{color:#ff8f8f;font-size:12px}
   svg{width:100%;height:120px;display:block}
+  .todo{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line)}
+  .todo:last-child{border-bottom:none}
+  .todo .dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:var(--gold)}
+  .todo.error .dot{background:var(--up)} .todo.ok .dot{background:var(--dn)}
+  .todo .body{flex:1;min-width:0}
+  .todo .t{font-size:14px;font-weight:600}
+  .todo .d{font-size:12px;color:var(--tx2);margin-top:2px;word-break:break-all}
+  .todo .cmd{font-size:11px;color:var(--acc);margin-top:3px;word-break:break-all;font-family:ui-monospace,Consolas,monospace}
+  .todo.done .t{text-decoration:line-through;color:var(--tx2)}
+  .todo .chk{background:none;border:1px solid var(--line);border-radius:6px;color:var(--tx2);
+             padding:2px 6px;font-size:11px;margin:0}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--tx2);margin-top:6px}
+  .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  label.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--tx2);margin:6px 0}
+  label.chk input{width:auto;margin:0}
   ul{list-style:none}
   li{padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
   .tag{color:var(--tx2);font-size:12px}
@@ -61,11 +76,16 @@
   <div id="alertBox"></div>
   <div id="orderBox"></div>
 
+  <h2>今日待办</h2>
+  <div class="card" id="todoBox"><div class="muted">加载中…</div></div>
+
   <h2>账户总览</h2>
   <div class="card"><div class="grid" id="kpis"><div class="muted">加载中…</div></div></div>
 
-  <h2>净值走势</h2>
+  <h2>净值走势 vs 沪深300</h2>
   <div class="card"><div id="chart"><div class="muted">加载中…</div></div>
+    <div class="legend"><span><i style="background:#ff5f5f"></i>模拟组合</span>
+      <span><i style="background:#4f8cff"></i>沪深300</span></div>
     <div class="muted" id="chartNote"></div></div>
 
   <h2>当前持仓</h2>
@@ -73,6 +93,9 @@
 
   <h2>最近决策</h2>
   <div class="card" id="decBox"><div class="muted">加载中…</div></div>
+
+  <h2>决策后验证（T+5/T+10/T+20）</h2>
+  <div class="card" id="verBox"><div class="muted">加载中…</div></div>
 
   <h2>候选池 Top5（综合评分）</h2>
   <div class="card" id="poolBox"><div class="muted">加载中…</div></div>
@@ -82,6 +105,21 @@
 
   <h2>成果验收</h2>
   <div class="card" id="valBox"><div class="muted">加载中…</div></div>
+
+  <details id="fillBox">
+    <summary>📝 回填实际成交价（手机直接写入仓库账本）</summary>
+    <div class="card">
+      <div class="muted">在同花顺模拟炒股APP成交后，填入实际成交价，可直接提交到仓库账本。
+      需要下方"高级"里填好仓库与令牌；不想联网也可以只生成本地命令，回家再执行。</div>
+      <input id="fillId" placeholder="决策编号，如 D2026090801">
+      <input id="fillPrice" placeholder="实际成交价，如 27.90" inputmode="decimal">
+      <input id="fillDate" placeholder="成交日期 YYYY-MM-DD（留空=今天）">
+      <label class="chk"><input type="checkbox" id="fillConfirm"> 同时确认该决策（人工判断 CONFIRMED）</label>
+      <button onclick="fillTrade()">写入仓库账本</button>
+      <button class="ghost" onclick="genCmd()">只生成本地命令</button>
+      <div id="fillMsg" class="muted"></div>
+    </div>
+  </details>
 
   <details>
     <summary>⚡ 高级：远程触发云端运行（需GitHub令牌）</summary>
@@ -149,12 +187,15 @@ function loadData(){
     jget("decisions.json").catch(e=>null),
     jget("pool.json").catch(e=>null),
     jget("market.json").catch(e=>null),
+    jget("benchmark.json").catch(e=>null),
+    jget("todo.json").catch(e=>null),
+    jget("verify.json").catch(e=>null),
   ]).then(r=>{render(r);
     if(r[0].err)setStatus("加载失败："+r[0].err+"。请检查地址（应以 /data/dashboard/ 结尾），或点“恢复默认地址”；国内网络可换 jsDelivr 备选地址",true);
     else setStatus("加载成功（"+b+"）");
   });
 }
-function render([s,nav,decs,pool,mkt]){
+function render([s,nav,decs,pool,mkt,bench,todos,vfy]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
   $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at+(s.data_stale?" · ⚠ 行情源故障，数据未更新到最新":"");
                 if(s.data_stale){ $("asOf").style.color="#c0392b"; }
@@ -179,8 +220,12 @@ function render([s,nav,decs,pool,mkt]){
     kpi("现金(万)",wan(s.cash),"")+
     kpi("持仓只数",s.positions.length,"")+
     kpi("验收完成度",s.completion+"%",s.completion==100?"dn":(s.completion>=80?"":"up"));
-  // 净值图
-  drawChart(nav||[]);
+  // 今日待办
+  renderTodos(todos||[]);
+  // 净值图（组合 vs 沪深300）
+  drawChart(nav||[], bench||[]);
+  // 决策后验证
+  renderVerify(vfy||{});
   // 持仓
   $("posBox").innerHTML=s.positions.length
     ? '<table><tr><th>证券</th><th>现价</th><th>成本</th><th>市值(万)</th><th>盈亏</th></tr>'
@@ -217,30 +262,150 @@ function render([s,nav,decs,pool,mkt]){
     +'<br><span class="tag">累计决策 '+s.n_decisions+' 条 · 人工已确认 '+s.confirmed+' 条</span></div>';
 }
 function kpi(l,v,c){return '<div class="kpi"><div class="l">'+l+'</div><div class="v '+c+'">'+v+'</div></div>';}
-function drawChart(nav){
+function renderTodos(todos){
+  const box=$("todoBox");
+  if(!todos.length){box.innerHTML='<div class="muted">暂无待办</div>';return;}
+  const key="pbl_done_"+((todos[0]||{}).title||"");
+  let done={};
+  try{done=JSON.parse(localStorage.getItem("pbl_done")||"{}");}catch(e){done={};}
+  box.innerHTML=todos.map((t,i)=>{
+    const k=(t.type||"")+i+(t.title||"");
+    const isDone=!!done[k];
+    return '<div class="todo '+(t.level||"")+(isDone?" done":"")+'" id="todo'+i+'">'
+      +'<span class="dot"></span><div class="body">'
+      +'<div class="t">'+esc(t.title||"")+'</div>'
+      +(t.detail?'<div class="d">'+esc(t.detail)+'</div>':'')
+      +(t.action?'<div class="cmd">'+esc(t.action)+'</div>':'')
+      +'</div><button class="chk" onclick="toggleTodo('+i+',\''+esc(k).replace(/'/g,"")+'\')">'
+      +(isDone?"已完成":"完成")+'</button></div>';
+  }).join("");
+}
+function toggleTodo(i,k){
+  let done={};
+  try{done=JSON.parse(localStorage.getItem("pbl_done")||"{}");}catch(e){done={};}
+  done[k]=!done[k];
+  try{localStorage.setItem("pbl_done",JSON.stringify(done));}catch(e){}
+  const el=$("todo"+i);
+  if(el){el.classList.toggle("done");const b=el.querySelector(".chk");if(b)b.textContent=el.classList.contains("done")?"已完成":"完成";}
+}
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+function renderVerify(v){
+  const box=$("verBox");
+  const rows=(v&&v.rows)||[], sum=(v&&v.summary)||{};
+  if(!rows.length){box.innerHTML='<div class="muted">暂无验证数据</div>';return;}
+  const cell=h=>{
+    if(!h||h.ret===null||h.ret===undefined)return '<span class="tag">待观察</span>';
+    const c=h.ret>0?"up":"dn";
+    return '<span class="'+c+'">'+(h.ret*100).toFixed(2)+'%</span>';
+  };
+  box.innerHTML='<table><tr><th>决策</th><th>T+5</th><th>T+10</th><th>T+20</th></tr>'
+    + rows.slice(-6).reverse().map(r=>'<tr><td>'+esc(r.name)+'<br><span class="tag">'+r.id+' '+r.side+'</span></td>'
+      +'<td>'+cell(r.h&&r.h["T+5"])+'</td><td>'+cell(r.h&&r.h["T+10"])+'</td><td>'+cell(r.h&&r.h["T+20"])+'</td></tr>').join("")
+    +'</table><div class="muted" style="margin-top:6px">'
+    +(sum.n_verified?'已验证 '+sum.n_verified+' 笔，方向正确率 '+(sum.win_rate!=null?(sum.win_rate*100).toFixed(0)+'%':'—'):'尚无到期样本（需 T+5 个交易日）')
+    +'</div>';
+}
+function drawChart(nav,bench){
   const box=$("chart");
   if(!nav.length){box.innerHTML='<div class="muted">暂无净值数据</div>';$("chartNote").textContent="";return;}
-  const vals=nav.map(n=>n.total_assets/10000);
-  const min=Math.min(...vals),max=Math.max(...vals),span=(max-min)||1;
-  const W=520,H=110,P=6;
-  const pts=nav.map((n,i)=>{
-    const x=nav.length>1?P+i*(W-2*P)/(nav.length-1):W/2;
-    const y=H-P-(vals[i]-min)/span*(H-2*P);
-    return [x,y];
-  });
-  const path=pts.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
-  const last=vals[vals.length-1],first=vals[0];
-  const color=last>=first?"#ff5f5f":"#3ddc84";
-  const baseLine=(pts.length<2)
-    ?'<line x1="'+P+'" y1="'+pts[0][1]+'" x2="'+(W-P)+'" y2="'+pts[0][1]
-      +'" stroke="#556" stroke-width="1" stroke-dasharray="4 3"/>'
-    :'';
+  const pnav=nav.map(n=>n.nav!==undefined?n.nav:(n.total_assets/5000000));
+  const bmap={};(bench||[]).forEach(b=>{bmap[b.date]=b.nav;});
+  const bnav=nav.map(n=>bmap[n.date]!==undefined?bmap[n.date]:null);
+  const all=pnav.concat(bnav.filter(x=>x!==null));
+  const min=Math.min.apply(null,all),max=Math.max.apply(null,all),span=(max-min)||0.01;
+  const W=520,H=120,P=8;
+  const xy=(v,i)=>{const x=nav.length>1?P+i*(W-2*P)/(nav.length-1):W/2;
+    const y=H-P-(v-min)/span*(H-2*P);return [x,y];};
+  const line=(vals,color,dash)=>{
+    let pts=[];
+    vals.forEach((v,i)=>{if(v===null)return;pts.push(xy(v,i));});
+    if(!pts.length)return "";
+    return '<polyline points="'+pts.map(p=>p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ")
+      +'" fill="none" stroke="'+color+'" stroke-width="2"'+(dash?' stroke-dasharray="5 4"':'')+'/>';
+  };
+  const dots=pnav.map((v,i)=>{const p=xy(v,i);return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.2" fill="#ff5f5f"/>';}).join("");
+  const base=xy(1,0);
   box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
-    +baseLine
-    +'<polyline points="'+path+'" fill="none" stroke="'+color+'" stroke-width="2"/>'
-    +pts.map(p=>'<circle cx="'+p[0]+'" cy="'+p[1]+'" r="2.2" fill="'+color+'"/>').join("")
-    +'</svg>';
-  $("chartNote").textContent="首日 "+first.toFixed(2)+"万 → 最新 "+last.toFixed(2)+"万（共 "+nav.length+" 个交易日）";
+    +'<line x1="'+P+'" y1="'+base[1].toFixed(1)+'" x2="'+(W-P)+'" y2="'+base[1].toFixed(1)+'" stroke="#556" stroke-width="1" stroke-dasharray="4 3"/>'
+    +line(bnav,"#4f8cff",true)+line(pnav,"#ff5f5f",false)+dots+'</svg>';
+  const last=pnav[pnav.length-1],first=pnav[0];
+  const lastB=bnav.filter(x=>x!==null).slice(-1)[0];
+  $("chartNote").textContent="组合净值 "+first.toFixed(4)+" → "+last.toFixed(4)
+    +"（"+(last-1>=0?"+":"")+((last-1)*100).toFixed(2)+"%）"
+    +(lastB!==undefined&&lastB!==null?" · 沪深300 "+(lastB-1>=0?"+":"")+((lastB-1)*100).toFixed(2)+"%":"")
+    +" · 共 "+nav.length+" 个交易日";
+}
+async function ghApi(path,opts){
+  const repo=(localStorage.getItem("pbl_repo")||"").trim(),tok=($("token")||{}).value||"";
+  if(!repo||!tok)throw new Error("请先在下方“高级”里填写仓库（用户名/仓库名）和令牌");
+  const r=await fetch("https://api.github.com/repos/"+repo+"/contents/"+path,Object.assign({
+    headers:{Authorization:"token "+tok,Accept:"application/vnd.github+json"}},opts||{}));
+  if(!r.ok){let m="HTTP "+r.status;try{const j=await r.json();if(j.message)m+=" "+j.message;}catch(e){}
+    throw new Error(m);}
+  return r.json();
+}
+function b64enc(str){const bytes=new TextEncoder().encode(str);let bin="";
+  bytes.forEach(b=>bin+=String.fromCharCode(b));return btoa(bin);}
+function b64dec(b){const bin=atob(String(b).replace(/\s/g,""));const bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));
+  return new TextDecoder("utf-8").decode(bytes);}
+function fillArgs(){
+  const id=$("fillId").value.trim().toUpperCase();
+  const price=parseFloat($("fillPrice").value);
+  let date=$("fillDate").value.trim();
+  if(!date){const d=new Date();date=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+  if(!id||!/^D\d{8}\d{2}$/.test(id))throw new Error("决策编号格式应为 D+日期+序号，如 D2026090801");
+  if(!(price>0))throw new Error("请填写正确的实际成交价");
+  return {id,price,date,confirm:$("fillConfirm").checked};
+}
+function genCmd(){
+  const msg=$("fillMsg");
+  try{const a=fillArgs();
+    msg.innerHTML='本机执行：<br><code>cd C:\\Users\\Lenovo\\Desktop\\证券投资\\workflow</code><br><code>python main.py fill '
+      +a.id+' '+a.price+' '+a.date+(a.confirm?' --confirm':'')+'</code>';
+    msg.style.color="#8b98ad";
+  }catch(e){msg.textContent=e.message;msg.style.color="#ff8f8f";}
+}
+async function fillTrade(){
+  const msg=$("fillMsg");msg.style.color="#8b98ad";
+  let a;
+  try{a=fillArgs();}catch(e){msg.textContent=e.message;msg.style.color="#ff8f8f";return;}
+  msg.textContent="正在读取仓库账本…";
+  try{
+    const f=await ghApi("data/trades.csv?ref=main");
+    const text=b64dec(f.content);
+    const lines=text.replace(/\r/g,"").split("\n").filter(x=>x.length);
+    const head=lines[0];
+    let hit=false;
+    for(let i=1;i<lines.length;i++){
+      const c=lines[i].split(",");
+      if(c[7]===a.id){
+        const shares=parseInt(c[5],10);
+        c[0]=a.date;c[4]=a.price;c[6]=(a.price*shares).toFixed(2);c[8]="manual";c[9]="人工回填实际成交价(手机端)";
+        lines[i]=c.join(",");hit=true;
+      }
+    }
+    if(!hit)throw new Error("账本里没有该决策的成交记录，请先在本机运行 python main.py fill "+a.id+" "+a.price);
+    msg.textContent="正在提交账本…";
+    await ghApi("data/trades.csv",{method:"PUT",body:JSON.stringify({
+      message:"人工回填实际成交价 "+a.id+" @ "+a.price,
+      content:b64enc(lines.join("\n")+"\n"),sha:f.sha,branch:"main"})});
+    let extra="";
+    if(a.confirm){
+      try{
+        const cf=await ghApi("data/confirmations.csv?ref=main");
+        const ctext=b64dec(cf.content);
+        if(ctext.indexOf(a.id)<0){
+          const nc=(ctext.replace(/\r/g,"").replace(/\n+$/,"")+"\n"+a.id+"\n");
+          await ghApi("data/confirmations.csv",{method:"PUT",body:JSON.stringify({
+            message:"人工确认决策 "+a.id,content:b64enc(nc),sha:cf.sha,branch:"main"})});
+          extra="，并已确认该决策";
+        }else{extra="（该决策此前已确认）";}
+      }catch(e){extra="；确认写入失败："+e.message;}
+    }
+    msg.innerHTML='✅ 已写入仓库：'+a.id+' 成交价 '+a.price+'（'+a.date+'）'+extra
+      +'<br>云端会在下次运行时同步到账本与验收结果，点“立即刷新”稍后查看。';
+    msg.style.color="#3ddc84";
+  }catch(e){msg.textContent="写入失败："+e.message;msg.style.color="#ff8f8f";}
 }
 async function trigger(task){
   const repo=(localStorage.getItem("pbl_repo")||"").trim(),tok=$("token").value.trim();

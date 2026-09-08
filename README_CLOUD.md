@@ -31,8 +31,10 @@ GitHub Actions 云端（免费，24小时在线）
      在"数据源设置"里填 `https://raw.githubusercontent.com/你的用户名/pbl-workflow/main/data/dashboard/` → 保存并刷新。
    - **B. GitHub Pages**：仓库 Settings → Pages → Branch 选 main → Save，得到 `https://你的用户名.github.io/pbl-workflow/dashboard/`，
      手机浏览器打开并同样配置数据源（用 jsDelivr 加速更稳：`https://cdn.jsdelivr.net/gh/你的用户名/pbl-workflow@main/data/dashboard/`）。
-   - **C. 远程触发（可选）**：仪表盘"高级"面板可填 GitHub 令牌远程触发一次运行。
-     创建入口：GitHub → Settings → Developer settings → Fine-grained tokens → 仅授权该仓库、仅 `Actions: Read and write` 权限。令牌只存在手机本地。
+   - **C. 远程触发 / 手机回填成交价（可选）**：仪表盘"高级"面板可填 GitHub 令牌远程触发一次运行；
+     "回填实际成交价"面板还能把成交价直接写进仓库账本（`data/trades.csv`），并可选同时确认决策。
+     创建入口：GitHub → Settings → Developer settings → Fine-grained tokens → 仅授权该仓库，
+     权限勾选 **Actions: Read and write**（触发运行）和 **Contents: Read and write**（回填成交价）。令牌只存在手机本地。
 
 ## 二、重要事项
 
@@ -54,7 +56,20 @@ GitHub Actions 云端（免费，24小时在线）
 | .github/workflows/schedule.yml | 定时+手动触发的 Actions 工作流 |
 | requirements.txt | Python 依赖 |
 | dashboard/index.html | 手机仪表盘（单文件，无外部依赖，鸿蒙浏览器直接用） |
-| data/dashboard/ | 仪表盘数据（summary/nav/decisions/pool/market/alerts.json） |
+| data/dashboard/ | 仪表盘数据：summary/nav/decisions/pool/market/alerts + **benchmark（沪深300净值）/todo（待办清单）/verify（决策后验证）** |
+| src/verify.py | 决策后验证：T+5/T+10/T+20 表现与基准对照 |
+| src/brief.py | 报告素材包（16）/周会材料包（18）生成 |
+| src/benchmark.py | 沪深300净值序列，图表与仪表盘统一口径 |
+| tools/fix_tech_basis.py | 一次性修复脚本（历史决策文本问题） |
+| PROGRESS.md | 进度、待办与故障排查 |
+
+## 三点五、仪表盘新增（2026-09-08）
+
+- **今日待办**：自动汇总"待执行指令 / 待确认决策 / 待回填成交价 / 数据陈旧 / 验收缺项 / 风险预警"，
+  每条都带可复制的本地命令，可勾选标记完成（状态存在手机本地）。
+- **净值 vs 沪深300**：两条同起点归一曲线，直接看超额。
+- **决策后验证**：每笔决策的 T+5/T+10/T+20 表现（到期后自动填充）。
+- **回填实际成交价**：手机填编号+成交价即可写入仓库账本，可选同时确认决策；也可以只生成命令回家执行。
 
 ## 四、已完成的测试（2026-09-06）
 

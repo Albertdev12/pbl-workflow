@@ -99,6 +99,11 @@ def save_pool(date, pool_res):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def read_pool_history():
+    """全部候选池历史（按日期升序），用于周会材料包的"池子变化"对比。"""
+    return _read_jsonl("pool_history.jsonl")
+
+
 def latest_pool():
     rows = _read_jsonl("pool_history.jsonl")
     return rows[-1]["pool"] if rows else []

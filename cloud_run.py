@@ -24,8 +24,9 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(BASE, "src"))
 
 from main import (CFG, run_daily, run_dailyreport, run_data, run_market,  # noqa: E402
-                  run_pool, run_review, run_riskwatch, run_weekly,
+                  run_pool, run_review, run_riskwatch, run_verify, run_weekly,
                   benchmark_pct_since, last_trading_date, data_freshness)
+import benchmark  # noqa: E402
 import portfolio as pf  # noqa: E402
 import records  # noqa: E402
 import validator  # noqa: E402
@@ -55,6 +56,55 @@ def _jdump(name, obj):
         json.dump(obj, f, ensure_ascii=False)
 
 
+def build_todos(summary, acct):
+    """手机端"今天该做什么"清单：把需要人工处理的事项集中成可勾选列表。"""
+    todos = []
+    date = summary.get("as_of")
+    for d in summary.get("decisions_today", []):
+        todos.append({"level": "action", "type": "指令",
+                      "title": f"{d['side']} {d['name']}（{d['code']}）",
+                      "detail": f"参考价 {d['price']} × {d['shares']:,} 股 ≈ {d['amount']/10000:.2f} 万元",
+                      "action": f"在同花顺模拟炒股APP下单后运行 python main.py fill {d['id']} <实际成交价> --confirm"})
+    for d in summary.get("pending_decisions", []):
+        todos.append({"level": "warn", "type": "确认",
+                      "title": f"待确认决策 {d['id']}",
+                      "detail": f"{d['date']} {d['side']} {d['name']}（{d['code']}）",
+                      "action": f"python main.py confirm {d['id']}"})
+    for t in summary.get("unfilled_trades", []):
+        todos.append({"level": "warn", "type": "回填",
+                      "title": f"待回填实际成交价 {t['id']}",
+                      "detail": f"{t['date']} {t['side']} {t['name']}（{t['code']}）系统按 {t['price']} 记账",
+                      "action": f"python main.py fill {t['id']} <实际成交价> [成交日期] --confirm"})
+    if summary.get("data_stale"):
+        todos.append({"level": "error", "type": "数据",
+                      "title": "行情数据未更新到最新交易日",
+                      "detail": "可能数据源波动或定时任务延迟，可手动触发一次 eod",
+                      "action": "仪表盘高级面板 → 触发收盘全流程"})
+    for m in summary.get("missing", []):
+        todos.append({"level": "warn", "type": "验收",
+                      "title": f"验收缺项：{m}", "detail": "完成该检查项后验收回到100%",
+                      "action": "python main.py validate"})
+    alerts = [a for rec in summary.get("recent_alerts", []) for a in rec.get("alerts", [])]
+    for a in alerts[:3]:
+        todos.append({"level": "error", "type": "风险", "title": a,
+                      "detail": "盘中风险监控触发，请在收盘前处理",
+                      "action": "python main.py riskwatch"})
+    try:
+        up = dt.datetime.strptime(summary.get("updated_at", ""), "%Y-%m-%d %H:%M:%S")
+        hours = (dt.datetime.now() - up).total_seconds() / 3600
+        if hours > 30:
+            todos.append({"level": "warn", "type": "运行",
+                          "title": f"已 {hours:.0f} 小时没有新数据",
+                          "detail": "云端定时任务可能未投递（GitHub cron 延迟），建议手动触发一次",
+                          "action": "仪表盘高级面板 → 触发收盘全流程"})
+    except Exception:
+        pass
+    if not todos:
+        todos.append({"level": "ok", "type": "状态", "title": "暂无待办",
+                      "detail": "组合运行正常，纪律执行中", "action": ""})
+    return todos
+
+
 def export_dashboard():
     os.makedirs(DASH, exist_ok=True)
     date, data_stale = data_freshness()
@@ -82,6 +132,16 @@ def export_dashboard():
     except Exception:
         alerts = []
 
+    trades = pf.read_trades()
+    pending_decisions = [{"id": d["decision_id"], "date": d["date"], "side": d["side"],
+                          "name": d["name"], "code": d["code"]}
+                         for d in decisions if d["decision_id"] not in confirmed]
+    unfilled_trades = [{"id": t.get("decision_id", ""), "date": t["date"], "side": t["side"],
+                        "name": t["name"], "code": t["code"], "price": t["price"]}
+                       for t in trades
+                       if t.get("decision_id") and t.get("source") == "auto"
+                       and "自动成交" in (t.get("note") or "")]
+
     summary = {
         "as_of": date,
         "data_stale": data_stale,
@@ -89,7 +149,7 @@ def export_dashboard():
         "initial_capital": CFG["strategy"]["initial_capital"],
         "total_assets": total,
         "return_pct": round((total / CFG["strategy"]["initial_capital"] - 1) * 100, 2),
-        "benchmark": benchmark_pct_since(CFG["course"]["start_date"]),
+        "benchmark": benchmark_pct_since(),
         "cash": acct["cash"],
         "cash_pct": round(acct["cash"] / total * 100, 1) if total else 0,
         "positions": _positions(acct, prices),
@@ -101,6 +161,8 @@ def export_dashboard():
                             for d in today_dec],
         "n_decisions": len(decisions),
         "confirmed": len(confirmed),
+        "pending_decisions": pending_decisions,
+        "unfilled_trades": unfilled_trades,
         "completion": rep["completion"],
         "ready_for_submission": rep["ready_for_submission"],
         "missing": rep["missing"],
@@ -115,6 +177,26 @@ def export_dashboard():
     }
     _jdump("summary.json", summary)
     _jdump("nav.json", records.read_nav())
+    # 净值 vs 沪深300：同一批日期、同起点归一
+    try:
+        nav = records.read_nav()
+        _jdump("benchmark.json", benchmark.series(dates=[r["date"] for r in nav]))
+    except Exception as e:
+        print("[仪表盘] 基准序列导出失败:", e)
+        _jdump("benchmark.json", [])
+    # 决策后验证（T+5/T+10/T+20）
+    try:
+        vrep = run_verify()
+        _jdump("verify.json", {"summary": vrep.get("summary", {}),
+                               "rows": [{"id": r["decision_id"], "date": r["date"], "side": r["side"],
+                                         "name": r["name"], "code": r["code"], "price": r["price"],
+                                         "days": r["days_elapsed"], "status": r["status"],
+                                         "h": {k: v for k, v in r["horizons"].items()}}
+                                        for r in vrep.get("rows", [])]})
+    except Exception as e:
+        print("[仪表盘] 决策后验证导出失败:", e)
+        _jdump("verify.json", {"summary": {}, "rows": []})
+    _jdump("todo.json", build_todos(summary, acct))
     _jdump("decisions.json", [{"id": d["decision_id"], "date": d["date"], "side": d["side"],
                                "name": d["name"], "code": d["code"], "price": d["price"],
                                "shares": d["shares"], "amount": d["amount"],
@@ -124,7 +206,8 @@ def export_dashboard():
     _jdump("pool.json", summary["pool_top"])
     _jdump("market.json", summary["market"])
     _jdump("alerts.json", alerts)
-    print(f"[仪表盘] 已导出6个JSON到 data/dashboard/（数据截止 {date}，总资产 {total/10000:.2f}万）")
+    print(f"[仪表盘] 已导出 {len(os.listdir(DASH))} 个JSON到 data/dashboard/（数据截止 {date}，"
+          f"总资产 {total/10000:.2f}万）")
 
 
 # ---------------------------------------------------------------- git 回传
@@ -167,6 +250,7 @@ TASKS = {
     "data": lambda: run_data("数据更新"),
     "market": run_market,
     "pool": run_pool,
+    "verify": run_verify,
 }
 
 

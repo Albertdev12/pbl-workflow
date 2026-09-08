@@ -162,7 +162,7 @@ def run_decision(date, pool, cfg, mode=None):
         cash_after = cash_now - amount
         if weight_after > st["max_single_position_pct"] + 1e-9 or cash_after < total * st["min_cash_pct"]:
             continue
-        sig_all = "；".join(r["tech_signal"])
+        sig_all = r["tech_signal"]  # tech_signal 本身已是"；"分隔的字符串（旧代码误按字符join，已修复）
         proposed.append({
             "code": code, "name": r["name"], "side": "买入",
             "price": r["close"], "shares": shares,
@@ -188,7 +188,7 @@ def run_decision(date, pool, cfg, mode=None):
                     "price": top["close"], "shares": shares,
                     "reason": f"交易频率约束（每两周至少{st['min_trades_per_2weeks']}笔）触发，选择候选池评分最高标的维持组合运作",
                     "fund_basis": "；".join(top["fin_reasons"][:2]) if top["fin_reasons"] else top["fin_judgment"],
-                    "tech_basis": f"{top['tech_judgment']}；{'；'.join(top['tech_signal'][:3])}",
+                    "tech_basis": f"{top['tech_judgment']}；{top['tech_signal']}",
                     "risk_judge": "；".join(top["risks"][:2]),
                 })
 

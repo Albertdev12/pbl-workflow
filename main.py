@@ -20,6 +20,10 @@
     python main.py validate  # 自动验收：成果清单完成度
     python main.py package   # 打包最终提交包
     python main.py confirm ID [ID...]  # 人工确认决策
+    python main.py fill ID 价格 [成交日] [--shares N] [--confirm]  # 回填实际成交价（并可选自动确认）
+    python main.py verify    # 决策后验证：T+5/T+10/T+20 表现与基准对照
+    python main.py brief     # 生成《16_报告素材包》（写报告/复盘用的数据汇总）
+    python main.py weekly    # 周报 + 《18_周会材料包》
 """
 import datetime as dt
 import json
@@ -38,6 +42,7 @@ for _s in (sys.stdout, sys.stderr):
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(BASE, "src"))
 
+import benchmark  # noqa
 import decision
 import indicators  # noqa
 import package as packager
@@ -46,6 +51,7 @@ import records
 import reports
 import screening
 import validator
+import verify as verify_mod
 from em_client import industry_board_rank, kline, kline_until
 
 CFG = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
@@ -115,12 +121,13 @@ def _refresh_if_stale():
     return last
 
 
-def benchmark_pct_since(date0):
-    df = kline(CFG["strategy"]["market_benchmark"], beg="20250101", is_index=True)
-    df = df[df["date"] >= date0].reset_index(drop=True)
-    if len(df) < 2:
+def benchmark_pct_since(date0=None):
+    """同期沪深300涨幅。date0 缺省取组合首个净值日，保证与组合同起点。"""
+    import benchmark
+    try:
+        return benchmark.pct_since(date0)
+    except Exception:
         return None
-    return f"{(df['close'].iloc[-1] / df['close'].iloc[0] - 1) * 100:+.2f}%"
 
 
 # ---------------------------------------------------------------- 市场观察
@@ -240,6 +247,10 @@ def run_daily(only_report=False):
     generate_docs(date, pool, acct, prices, total, decisions)
     set_state("REPORT_GENERATION")
 
+    # 4.5) 决策后验证 + 报告素材包（证据链闭环）
+    vrep = run_verify()
+    run_brief(vrep)
+
     # 5) 自动验收
     rep = validator.validate()
     print(f"[验收] 完成度 {rep['completion']}%（{rep['passed']}/{rep['total_checks']}）"
@@ -252,7 +263,7 @@ def run_daily(only_report=False):
 # ---------------------------------------------------------------- 文档生成
 def generate_docs(date, pool, acct, prices, total, decisions):
     all_decisions = records.read_decisions()
-    bm = benchmark_pct_since(CFG["course"]["start_date"])
+    bm = benchmark_pct_since()  # 与组合首个净值日同起点
     made = []
     for fn, *args in [
         (reports.market_watch_xlsx,),
@@ -279,6 +290,100 @@ def generate_docs(date, pool, acct, prices, total, decisions):
         print("   -", os.path.basename(m))
 
 
+# ---------------------------------------------------------------- 决策后验证 / 素材包
+_VREP_CACHE = None
+_BRIEF_CACHE = set()
+
+
+def run_verify(force=False):
+    """决策后验证：T+5/T+10/T+20 表现 + 同期沪深300对照 → outputs/19_决策后验证.xlsx。"""
+    global _VREP_CACHE
+    if _VREP_CACHE is not None and not force:
+        return _VREP_CACHE
+    try:
+        rep = verify_mod.build_report()
+    except Exception as e:
+        print(f"  [警告] 决策后验证失败: {e}")
+        return {"summary": {}, "rows": []}
+    verify_mod.save_log(rep)
+    try:
+        reports.verify_xlsx(rep)
+    except Exception as e:
+        print(f"  [警告] 生成决策后验证表失败: {e}")
+    s = rep["summary"]
+    print(f"[决策后验证] 决策{s.get('n_decisions', 0)}笔：已验证{s.get('n_verified', 0)}笔，"
+          f"待观察{s.get('n_pending', 0)}笔"
+          + (f"，方向正确率{s['win_rate']*100:.0f}%，平均超额{s['avg_excess']*100:+.2f}%"
+             if s.get("win_rate") is not None else "（尚无到期样本）"))
+    _VREP_CACHE = rep
+    return rep
+
+
+def run_brief(vrep=None):
+    """生成《16_报告素材包》：把账本/决策/回测/验证数据汇总成写报告可用的素材。"""
+    import brief
+    try:
+        path, _ = brief.build_report_pack(verify_report=vrep)
+    except Exception as e:
+        print(f"  [警告] 生成报告素材包失败: {e}")
+        return None
+    if path not in _BRIEF_CACHE:
+        _BRIEF_CACHE.add(path)
+        print("[报告素材包] 已生成:", os.path.basename(path))
+    return path
+
+
+def run_weekly_pack():
+    import brief
+    try:
+        path, _ = brief.build_weekly_pack()
+        print("[周会材料包] 已生成:", os.path.basename(path))
+        return path
+    except Exception as e:
+        print(f"  [警告] 生成周会材料包失败: {e}")
+        return None
+
+
+def run_fill(decision_id, price, trade_date=None, shares=None, do_confirm=False):
+    """人工回填实际成交价：把该决策在账本里的成交行改为真实价格/日期/数量。"""
+    trades = pf.read_trades()
+    hit = [t for t in trades if t.get("decision_id") == decision_id]
+    dec = next((d for d in records.read_decisions() if d["decision_id"] == decision_id), None)
+    if dec is None:
+        print(f"[回填] 找不到决策 {decision_id}，请核对编号（data/decisions.jsonl）")
+        return None
+    if not hit:
+        # 账本里还没有这笔成交（manual 模式或当日未记账）→ 按决策补记一笔
+        pf.append_trade(trade_date or dt.date.today().isoformat(), dec["code"], dec["name"],
+                        dec["side"], price, shares or dec["shares"],
+                        decision_id=decision_id, source="manual", note="人工回填实际成交价")
+        print(f"[回填] 账本无该笔成交，已按实际价格补记：{dec['side']} {dec['name']} "
+              f"{shares or dec['shares']}股 @ {price}")
+    else:
+        for t in hit:
+            old = (t["date"], t["price"], t["shares"])
+            t["price"] = float(price)
+            if shares:
+                t["shares"] = int(shares)
+            if trade_date:
+                t["date"] = trade_date
+            t["amount"] = round(t["price"] * t["shares"], 2)
+            t["source"] = "manual"
+            t["note"] = "人工回填实际成交价"
+            print(f"[回填] {dec['name']}({dec['code']}) {old[0]} {old[2]}股 @{old[1]} → "
+                  f"{t['date']} {t['shares']}股 @{t['price']}")
+        pf.write_trades(trades)
+    acct = pf.replay(pf.read_trades(), CFG["strategy"]["initial_capital"])
+    print(f"[回填] 账本已更新：现金 {acct['cash']/10000:.2f} 万元，持仓 {len(acct['positions'])} 只，"
+          f"累计交易 {len(pf.read_trades())} 笔")
+    if do_confirm:
+        records.confirm(decision_id)
+        print(f"[回填] 已同时人工确认 {decision_id}")
+    else:
+        print(f"[回填] 下一步：确认该决策请运行  python main.py confirm {decision_id}")
+    return decision_id
+
+
 def run_init():
     print("== 初始化：小组信息登记表 ==")
     reports.group_form(CFG)
@@ -297,7 +402,8 @@ def run_init():
 
 def run_weekly():
     date, total = run_daily()
-    print("== 周任务完成（含中期路演PPT刷新） ==")
+    run_weekly_pack()
+    print("== 周任务完成（含中期路演PPT刷新 + 周会材料包） ==")
 
 
 # ================================================================ 分时段任务（GPT规范第十六节：一天8次）
@@ -452,6 +558,25 @@ if __name__ == "__main__":
         for did in sys.argv[2:]:
             records.confirm(did)
             print("已人工确认:", did)
+    elif cmd == "fill":
+        args = [a for a in sys.argv[2:] if not a.startswith("--")]
+        if len(args) < 2:
+            print("用法: python main.py fill <决策ID> <实际成交价> [成交日期 YYYY-MM-DD] "
+                  "[--shares N] [--confirm]")
+        else:
+            sh = None
+            if "--shares" in sys.argv:
+                try:
+                    sh = int(sys.argv[sys.argv.index("--shares") + 1])
+                except Exception:
+                    sh = None
+            run_fill(args[0], float(args[1]), args[2] if len(args) > 2 else None,
+                     shares=sh, do_confirm="--confirm" in sys.argv)
+    elif cmd == "verify":
+        rep = run_verify(force=True)
+        print(json.dumps(rep["summary"], ensure_ascii=False, indent=2))
+    elif cmd == "brief":
+        run_brief(run_verify())
     elif cmd == "data":
         run_data("数据更新")
     elif cmd == "close":
