@@ -90,14 +90,16 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
     url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = dict(secid=secid, fields1="f1,f2,f3,f4,f5,f6",
                   fields2="f51,f52,f53,f54,f55,f56,f57", klt=klt, fqt=fqt, beg=beg, end=end)
+    from_fallback = False
     try:
         j = _get(url, params)
         d = j.get("data") or {}
         rows = [x.split(",") for x in d.get("klines", [])]
         df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
     except Exception as em_err:
-        try:  # 第二数据源：腾讯
+        try:  # 第二数据源：腾讯（只补缺口，不覆盖东财已有日期）
             df = _tencent_kline(secid, is_index=is_index)
+            from_fallback = True
             print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err)[:50]}），已切换腾讯数据源")
         except Exception:
             if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
@@ -111,7 +113,10 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
     # 增量合并缓存
     if os.path.exists(cache):
         old = pd.read_csv(cache, dtype={"date": str})
-        df = pd.concat([old[~old["date"].isin(set(df["date"]))], df], ignore_index=True)
+        if from_fallback:  # 备用源只补东财没有的日期，避免两套复权口径混用
+            df = pd.concat([old, df[~df["date"].isin(set(old["date"]))]], ignore_index=True)
+        else:
+            df = pd.concat([old[~old["date"].isin(set(df["date"]))], df], ignore_index=True)
         # 备用数据源下指数成交额缺失（NaN）→ 保留缓存中已有的真实成交额，避免污染"两市成交额"
         if "amount" in df.columns:
             amt_map = old.set_index("date")["amount"]
