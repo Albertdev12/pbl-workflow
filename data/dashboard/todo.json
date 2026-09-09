@@ -1,1 +1,1 @@
-[{"level": "warn", "type": "确认", "title": "待确认决策 D2026090801", "detail": "2026-09-08 买入 长江电力（600900）", "action": "python main.py confirm D2026090801"}, {"level": "warn", "type": "回填", "title": "待回填实际成交价 D2026090801", "detail": "2026-09-08 买入 长江电力（600900）系统按 27.87 记账", "action": "python main.py fill D2026090801 <实际成交价> [成交日期] --confirm"}, {"level": "warn", "type": "验收", "title": "验收缺项：人工判断是否已确认（confirmations.csv）", "detail": "完成该检查项后验收回到100%", "action": "python main.py validate"}]
+[{"level": "ok", "type": "状态", "title": "暂无待办", "detail": "组合运行正常，纪律执行中", "action": ""}]

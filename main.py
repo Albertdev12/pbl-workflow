@@ -201,7 +201,8 @@ def run_daily(only_report=False):
     data_staleness_check()
     set_state("DATA_COLLECTION")
 
-    done = any(d.get("date") == date for d in records.read_decisions())
+    # 幂等判断只看"策略自动生成"的决策；人工主动决策（manual）不算，否则会跳过当日自动决策
+    done = any(d.get("date") == date and not d.get("manual") for d in records.read_decisions())
     pool = records.latest_pool()
 
     if not only_report:

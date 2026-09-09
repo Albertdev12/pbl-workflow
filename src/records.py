@@ -57,10 +57,33 @@ def save_decisions(date, decisions):
     return decisions
 
 
+def save_manual_decision(date, dec):
+    """人工主动决策（策略自动流程不会生成的那种），单独存 manual_decisions.jsonl，
+    永远不会被当日自动流程覆盖；read_decisions() 会自动合并进来。"""
+    dec["date"] = date
+    dec.setdefault("manual", True)
+    rows = _read_jsonl("manual_decisions.jsonl")
+    for r in rows:
+        if r.get("date") == date:
+            r.setdefault("items", []).append(dec)
+            break
+    else:
+        rows.append({"date": date, "items": [dec]})
+    rows.sort(key=lambda x: x.get("date", ""))
+    with open(os.path.join(DATA_DIR, "manual_decisions.jsonl"), "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return dec
+
+
 def read_decisions():
+    """全部决策 = 策略自动生成 + 人工主动决策（按日期、编号排序）。"""
     out = []
     for r in _read_jsonl("decisions.jsonl"):
         out.extend(r.get("items", []))
+    for r in _read_jsonl("manual_decisions.jsonl"):
+        out.extend(r.get("items", []))
+    out.sort(key=lambda d: (d.get("date", ""), d.get("decision_id", "")))
     return out
 
 

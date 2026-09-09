@@ -56,11 +56,14 @@ def _jdump(name, obj):
         json.dump(obj, f, ensure_ascii=False)
 
 
-def build_todos(summary, acct):
+def build_todos(summary, acct, confirmed=None):
     """手机端"今天该做什么"清单：把需要人工处理的事项集中成可勾选列表。"""
     todos = []
     date = summary.get("as_of")
+    confirmed = confirmed or set()
     for d in summary.get("decisions_today", []):
+        if d["id"] in confirmed:   # 已确认=已执行，不再列入待办
+            continue
         todos.append({"level": "action", "type": "指令",
                       "title": f"{d['side']} {d['name']}（{d['code']}）",
                       "detail": f"参考价 {d['price']} × {d['shares']:,} 股 ≈ {d['amount']/10000:.2f} 万元",
@@ -196,7 +199,7 @@ def export_dashboard():
     except Exception as e:
         print("[仪表盘] 决策后验证导出失败:", e)
         _jdump("verify.json", {"summary": {}, "rows": []})
-    _jdump("todo.json", build_todos(summary, acct))
+    _jdump("todo.json", build_todos(summary, acct, confirmed))
     _jdump("decisions.json", [{"id": d["decision_id"], "date": d["date"], "side": d["side"],
                                "name": d["name"], "code": d["code"], "price": d["price"],
                                "shares": d["shares"], "amount": d["amount"],
