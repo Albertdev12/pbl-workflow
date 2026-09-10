@@ -18,7 +18,8 @@ import time
 
 import requests
 
-from em_client import industry_board_rank, kline_until, market_snapshot, snapshot
+from em_client import (industry_board_rank, kline, kline_until, market_snapshot,
+                       secid_of, snapshot)
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(BASE, "data")
@@ -68,20 +69,18 @@ def session_now(now=None):
     return "eod"
 
 
-def _kline_tx(code, n=120):
-    """腾讯前复权日K（不落盘缓存，避免候选股每天新增CSV把仓库撑大）。"""
-    sym = ("sh" if code.startswith(("6", "9", "5")) else "sz") + code
-    for i in range(3):
-        try:
-            r = requests.get("http://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-                             params={"param": f"{sym},day,,,{n},qfq"}, headers=UA, timeout=15)
-            rows = ((r.json().get("data") or {}).get(sym) or {}).get("qfqday") or []
-            if rows:
-                return [{"d": x[0], "o": float(x[1]), "c": float(x[2]),
-                         "h": float(x[3]), "l": float(x[4])} for x in rows]
-        except Exception:
-            time.sleep(0.8 * (i + 1))
-    return []
+def _bars(code, n=140):
+    """候选股日K，不落盘缓存（避免候选股每天新增CSV把仓库撑大）。
+
+    数据源交给 em_client.kline 统一负责：东财 → 腾讯 → 新浪 三级降级，
+    任一源可用即可拿到技术面数据（实测腾讯被限流、东财被网关拦截时新浪仍可用）。
+    """
+    try:
+        df = kline(secid_of(code), cache=False).tail(n)
+        return [{"d": r.date, "o": r.open, "c": r.close, "h": r.high, "l": r.low}
+                for r in df.itertuples()]
+    except Exception:
+        return []
 
 
 def _tech(bars):
@@ -161,7 +160,7 @@ def collect(date, cand_n=40):
     import concurrent.futures as cf
     slice_ = stocks[:cand_n * 3]
     with cf.ThreadPoolExecutor(max_workers=6) as ex:
-        barlist = list(ex.map(lambda s: _kline_tx(s["code"]), slice_))
+        barlist = list(ex.map(lambda s: _bars(s["code"]), slice_))
 
     cands, dropped = [], 0
     for s, bars in zip(slice_, barlist):
@@ -226,8 +225,8 @@ def collect(date, cand_n=40):
                         "样本": len(rows)},
             "boards_top": top, "boards_bottom": bot, "portfolio": port,
             "candidates": cands,
-            "data_quality": {"来源": ["东方财富快照", "腾讯前复权日K"],
-                             "校验": "逐只比对收盘价，偏差>0.5%剔除",
+            "data_quality": {"来源": ["东方财富快照（价格）", "日K：东财→腾讯→新浪三级降级"],
+                             "校验": "逐只比对K线收盘价与快照价，偏差>0.5%剔除",
                              "剔除数据可疑": dropped, "候选数": len(cands)}}
 
 
@@ -257,7 +256,13 @@ def _messages(ctx, session):
 
 
 def _call(messages, retries=None):
-    """调用 DeepSeek Chat Completions（OpenAI 兼容）。返回 (文本, usage)。"""
+    """调用 DeepSeek Chat Completions（OpenAI 兼容）。返回 (文本, usage)。
+
+    deepseek-v4-flash 是推理模型：默认会把内容写进 reasoning_content 而 content 可能为空，
+    且思考会先吃掉 max_tokens，容易导致 JSON 被截断。因此显式传
+    {"thinking": {"type": "disabled"}} 关闭思考——实测输出更稳定、token 消耗从 230 降到 9。
+    若接口未来不再接受该参数，自动去掉后重试一次（不影响可用性）。
+    """
     key = _key()
     if not key:
         raise RuntimeError("缺少 DEEPSEEK_API_KEY（请在 GitHub 仓库 Secrets 中配置）")
@@ -265,7 +270,8 @@ def _call(messages, retries=None):
     payload = {"model": c.get("model", "deepseek-v4-flash"), "messages": messages,
                "temperature": c.get("temperature", 0.3),
                "max_tokens": c.get("max_tokens", 4000),
-               "response_format": {"type": "json_object"}, "stream": False}
+               "response_format": {"type": "json_object"},
+               "thinking": {"type": "disabled"}, "stream": False}
     retries = retries if retries is not None else c.get("retries", 3)
     last = None
     for i in range(retries):
@@ -276,7 +282,15 @@ def _call(messages, retries=None):
             if r.status_code == 200:
                 j = r.json()
                 msg = (j.get("choices") or [{}])[0].get("message") or {}
-                return (msg.get("content") or ""), j.get("usage") or {}
+                text = msg.get("content") or ""
+                if not text.strip() and msg.get("reasoning_content"):
+                    # 兜底：万一思考未被关闭，至少把推理内容当文本解析（_json_of 会尝试提取JSON）
+                    text = msg.get("reasoning_content") or ""
+                return text, j.get("usage") or {}
+            if r.status_code == 400 and "thinking" in r.text and "thinking" in payload:
+                print("[AI] 接口不接受 thinking 参数，去掉后重试")
+                payload.pop("thinking", None)
+                continue
             last = f"HTTP {r.status_code}: {r.text[:200]}"
             if r.status_code in (401, 403):
                 break  # 密钥问题不重试

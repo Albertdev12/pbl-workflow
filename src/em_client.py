@@ -109,9 +109,30 @@ def _get(url, params, timeout=12, retries=3):
 
 
 # ---------------------------------------------------------------- 日K线
-def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=False):
-    """日K线 -> DataFrame[date, open, close, high, low, volume, amount]。网络失败时回退本地缓存。"""
-    cache = os.path.join(KLINE_DIR, f"{secid.replace('.', '_')}.csv")
+def _sina_kline(secid, count=320):
+    """第三数据源（新浪）日K。用于东财与腾讯同时不可用时兜底（实测两源故障时仍稳定可用）。
+    注意：该接口为不复权价，只用于技术指标粗算；估值一律走 snapshot 的真实成交价。"""
+    sym = ("sh" if secid.split(".")[0] == "1" else "sz") + secid.split(".")[1]
+    r = requests.get("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                     f"CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=no&datalen={count}",
+                     headers={**HEADERS, "Referer": "https://finance.sina.com.cn"}, timeout=15)
+    r.raise_for_status()
+    data = json.loads(r.text.strip())
+    if not data:
+        raise ValueError("sina kline empty")
+    df = pd.DataFrame(data).rename(columns={"day": "date"})
+    df = df[["date", "open", "close", "high", "low", "volume"]]
+    df["amount"] = float("nan")
+    return df
+
+
+def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=False, cache=True):
+    """日K线 -> DataFrame[date, open, close, high, low, volume, amount]。
+
+    数据源顺序：东财(push2his) → 腾讯 → 新浪；全部失败时回退本地CSV缓存。
+    cache=False 时不读写本地CSV（供只做一次技术面计算的批量调用，避免候选股每天新增文件）。
+    """
+    cache_path = os.path.join(KLINE_DIR, f"{secid.replace('.', '_')}.csv")
     url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = dict(secid=secid, fields1="f1,f2,f3,f4,f5,f6",
                   fields2="f51,f52,f53,f54,f55,f56,f57", klt=klt, fqt=fqt, beg=beg, end=end)
@@ -132,18 +153,25 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
             df = _tencent_kline(secid, is_index=is_index)
             from_fallback = True
             print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err or '主源已熔断')[:50]}），已切换腾讯数据源")
-        except Exception:
-            if os.path.exists(cache):  # DATA_STALE回退：使用本地缓存
-                df = pd.read_csv(cache, dtype={"date": str})
-                print(f"[DATA_STALE] 双数据源均失败，回退本地缓存: {cache}")
-                return df.sort_values("date").reset_index(drop=True)
-            raise
+        except Exception as tx_err:
+            try:  # 第三数据源：新浪
+                df = _sina_kline(secid)
+                from_fallback = True
+                print(f"[DATA_FALLBACK] 东财+腾讯均失败（{str(tx_err)[:40]}），已切换新浪数据源")
+            except Exception:
+                if cache and os.path.exists(cache_path):  # DATA_STALE回退：使用本地缓存
+                    df = pd.read_csv(cache_path, dtype={"date": str})
+                    print(f"[DATA_STALE] 三数据源均失败，回退本地缓存: {cache_path}")
+                    return df.sort_values("date").reset_index(drop=True)
+                raise
     for c in df.columns:
         if c != "date":
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    if not cache:
+        return df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
     # 增量合并缓存
-    if os.path.exists(cache):
-        old = pd.read_csv(cache, dtype={"date": str})
+    if os.path.exists(cache_path):
+        old = pd.read_csv(cache_path, dtype={"date": str})
         if from_fallback:  # 备用源只补东财没有的日期，避免两套复权口径混用
             df = pd.concat([old, df[~df["date"].isin(set(old["date"]))]], ignore_index=True)
         else:
@@ -153,7 +181,7 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
             amt_map = old.set_index("date")["amount"]
             df["amount"] = df["amount"].fillna(df["date"].map(amt_map))
     df = df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
-    df.to_csv(cache, index=False)
+    df.to_csv(cache_path, index=False)
     return df
 
 
