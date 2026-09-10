@@ -462,33 +462,68 @@ def run_pool():
 
 
 def run_riskwatch():
-    """盘中风险监控：实时快照对照止盈止损线与市场状态，触发即生成预警。"""
-    from em_client import snapshot
+    """盘中风险监控：止盈止损线 + 关键均线破位 + 市场状态 + 现金纪律，触发即生成预警。
+
+    注意：原实现 `if not u: continue` 会跳过"不在观察池(universe)里的持仓"
+    （例如人工建仓的新集能源），导致这些仓位完全不设防。现改为任何持仓都监控，
+    不在池内的标的自动推导 secid。
+    均线破位用实时价现算（而不是硬编码价位），所以预警线会随行情自动上移/下移。
+    """
+    from em_client import kline, secid_of, snapshot
     st = CFG["strategy"]
     acct = pf.replay(pf.read_trades(), st["initial_capital"])
     alerts, prices = [], {}
+    pnl_map = {}
     for code, pos in acct["positions"].items():
         u = next((x for x in CFG["universe"] if x["code"] == code), None)
-        if not u:
-            continue
+        secid = u["secid"] if u else secid_of(code)
         try:
-            p = snapshot(u["secid"])
+            p = snapshot(secid)
+            px = p["price"]
         except Exception:
             continue
-        prices[code] = p["price"]
-        pnl = p["price"] / pos["cost"] - 1 if pos["cost"] else 0
+        prices[code] = px
+        pnl = px / pos["cost"] - 1 if pos["cost"] else 0
+        pnl_map[code] = pnl
         if pnl >= st["take_profit_pct"]:
-            alerts.append(f"【止盈预警】{pos['name']}({code}) 浮盈{pnl*100:.1f}% ≥ {st['take_profit_pct']*100:.0f}%，现价{p['price']}")
+            alerts.append(f"【止盈预警】{pos['name']}({code}) 浮盈{pnl*100:.1f}% ≥ "
+                          f"{st['take_profit_pct']*100:.0f}%，现价{px}")
         elif pnl <= -st["stop_loss_pct"]:
-            alerts.append(f"【止损预警】{pos['name']}({code}) 浮亏{pnl*100:.1f}% ≤ -{st['stop_loss_pct']*100:.0f}%，现价{p['price']}")
+            alerts.append(f"【止损预警】{pos['name']}({code}) 浮亏{pnl*100:.1f}% ≤ "
+                          f"-{st['stop_loss_pct']*100:.0f}%，现价{px}")
+        # 关键均线破位（0.3% 缓冲，避免贴着均线反复报警）
+        try:
+            c = kline(secid, cache=False)["close"]
+            ma20, ma60 = float(c.tail(20).mean()), float(c.tail(60).mean())
+            if px < ma20 * 0.997:
+                if px < ma60 * 0.997:
+                    alerts.append(f"【破位预警】{pos['name']}({code}) 现价{px} 同时跌破20日线"
+                                  f"{ma20:.2f}与60日线{ma60:.2f}，中期趋势走坏，建议减仓")
+                else:
+                    alerts.append(f"【破位预警】{pos['name']}({code}) 现价{px} 跌破20日线"
+                                  f"{ma20:.2f}，短线转弱，不加仓并观察")
+        except Exception:
+            pass
     try:
-        hs_pct = snapshot(CFG["strategy"]["market_benchmark"]).get("pct_chg")
-        if hs_pct is not None and hs_pct <= -2.0:
-            alerts.append(f"【市场预警】沪深300盘中下跌{hs_pct:.2f}%，警惕系统性回撤，可降低仓位")
+        bm = CFG["strategy"]["market_benchmark"]
+        b = snapshot(bm)
+        c = kline(bm, cache=False, is_index=True)["close"]
+        ma20 = float(c.tail(20).mean())
+        if b.get("pct_chg") is not None and b["pct_chg"] <= -2.0:
+            alerts.append(f"【市场预警】沪深300盘中下跌{b['pct_chg']:.2f}%，警惕系统性回撤，可降低仓位")
+        if b.get("price") and b["price"] < ma20:
+            alerts.append(f"【市场预警】沪深300 {b['price']:.2f} 位于20日均线{ma20:.2f}下方，中期偏弱，控制新增仓位")
     except Exception:
         pass
+    # 现金纪律：低于策略下限时持续提醒（这是容易在连续加仓后失控的指标）
+    total = pf.total_assets(acct, prices)
+    if total:
+        cash_ratio = acct["cash"] / total
+        if cash_ratio < st["min_cash_pct"]:
+            alerts.append(f"【仓位预警】现金占比{cash_ratio*100:.1f}% 低于策略下限"
+                          f"{st['min_cash_pct']*100:.0f}%，抗回撤能力不足，建议减仓腾出现金")
     rec = {"time": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-           "alerts": alerts, "total_assets": pf.total_assets(acct, prices)}
+           "alerts": alerts, "total_assets": total, "pnl": {k: round(v, 4) for k, v in pnl_map.items()}}
     with open(os.path.join(BASE, "data", "riskwatch_log.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     if alerts:
