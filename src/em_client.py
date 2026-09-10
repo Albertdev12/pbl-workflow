@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
@@ -193,44 +194,169 @@ def snapshot(secid):
     return out
 
 
+# ---------------------------------------------------------------- 板块/全市场列表源
+# 云端 GitHub Actions 走 http 主源稳定；部分本机网络会拦截明文 http。
+# 首次调用探测一次并缓存，之后全部请求复用同一主机。
+CLIST_HOSTS = ("http://push2.eastmoney.com",
+               "https://push2delay.eastmoney.com",
+               "https://push2.eastmoney.com")
+_CLIST_BASE = None
+
+
+def clist_base():
+    global _CLIST_BASE
+    if _CLIST_BASE:
+        return _CLIST_BASE
+    for base in CLIST_HOSTS:
+        try:
+            r = requests.get(base + "/api/qt/clist/get",
+                             params=dict(pn=1, pz=1, po=1, np=1, fltt=2, invt=2, fid="f3",
+                                         fs="m:0+t:6", fields="f12"),
+                             headers=HEADERS, timeout=8)
+            if r.status_code == 200 and ((r.json().get("data") or {}).get("diff") or []):
+                _CLIST_BASE = base
+                return base
+        except Exception:
+            continue
+    _CLIST_BASE = CLIST_HOSTS[0]
+    return _CLIST_BASE
+
+
 # ---------------------------------------------------------------- 行业板块
 BOARD_CACHE = os.path.join(DATA_DIR, "board_rank_cache.json")
 BOARD_CACHE_DOWN = os.path.join(DATA_DIR, "board_rank_cache_down.json")
 
 
+def _board_cache_read(path, top, label):
+    """读板块缓存：截断到 top 条，并标注新鲜度（旧格式纯列表也兼容）。"""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            obj = json.load(f)
+        if isinstance(obj, dict):
+            day, rows = obj.get("date"), obj.get("rows") or []
+        else:
+            day, rows = None, obj
+        if day and day != time.strftime("%Y-%m-%d"):
+            print(f"[DATA_STALE] 板块{label}缓存日期为 {day}（非今日），数据可能过时")
+        return rows[:top]
+    except Exception:
+        return None
+
+
+def _board_pages(po, max_pages=5):
+    """抓取板块列表（东财每页上限100条）。po=1 降序 / po=0 升序。"""
+    out = []
+    for pn in range(1, max_pages + 1):
+        try:
+            j = _get(clist_base() + "/api/qt/clist/get",
+                     dict(pn=pn, pz=100, po=po, np=1, fltt=2, invt=2, fid="f3",
+                          fs="m:90+t:2", fields="f3,f14,f136,f128"))
+        except Exception:
+            break
+        diff = (j.get("data") or {}).get("diff") or []
+        if not diff:
+            break
+        out += [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")}
+                for d in diff if isinstance(d.get("f3"), (int, float))]
+        if len(diff) < 100:
+            break
+    return out
+
+
 def industry_board_rank(top=15, asc=False):
     """东财行业板块涨跌幅榜 [{name, pct, lead_stock}]，asc=True 取跌幅榜。
 
-    注意：原先取"领跌板块"用的是涨幅榜的末5位（即第11~15名上涨板块），口径错误；
-    跌幅榜必须用 po=0（按涨跌幅升序）单独请求。缓存分文件存放，互不覆盖。
+    注意：原先取"领跌板块"用的是涨幅榜的末5位（即第11~15名上涨板块），口径错误。
+    跌幅榜优先用 po=0 升序请求；若该参数在实际环境不可用（实测云端偶发无返回），
+    退化为"全量板块降序取尾部"——结果等价且只用已验证可用的 po=1。
+    缓存分文件存放，互不覆盖。
     """
-    url = "http://push2.eastmoney.com/api/qt/clist/get"
-    params = dict(pn=1, pz=top, po=0 if asc else 1, np=1, fltt=2, invt=2, fid="f3",
+    url = clist_base() + "/api/qt/clist/get"
+    params = dict(pn=1, pz=max(top, 100), po=0 if asc else 1, np=1, fltt=2, invt=2, fid="f3",
                   fs="m:90+t:2", fields="f3,f14,f136,f128")
     cache = BOARD_CACHE_DOWN if asc else BOARD_CACHE
     label = "跌幅榜" if asc else "涨幅榜"
     if not em_available("quote"):
-        if os.path.exists(cache):
-            with open(cache, encoding="utf-8") as f:
-                return json.load(f)
-        return []
+        rows = _board_cache_read(cache, top, label)
+        return rows if rows is not None else []
     try:
         j = _get(url, params)
         diff = (j.get("data") or {}).get("diff") or []
-        rows = [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")} for d in diff]
-        with open(cache, "w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False)
-        _em_ok("quote")
-        return rows
+        rows = [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")}
+                for d in diff if isinstance(d.get("f3"), (int, float))]
+        if asc and not rows:  # po=0 无返回 → 全量降序取尾部（等价结果）
+            allrows = _board_pages(1, max_pages=5)
+            if allrows:
+                print(f"[DATA_FALLBACK] 跌幅榜 po=0 无返回，改用全量板块降序取尾部"
+                      f"（共 {len(allrows)} 个板块）")
+                rows = list(reversed(allrows))
+        if rows:
+            with open(cache, "w", encoding="utf-8") as f:
+                json.dump({"date": time.strftime("%Y-%m-%d"), "rows": rows}, f, ensure_ascii=False)
+            _em_ok("quote")
+            return rows[:top]
+        raise ValueError("板块列表为空")
     except Exception as e:
         _em_fail("quote", e)
-        if os.path.exists(cache):
-            with open(cache, encoding="utf-8") as f:
-                rows = json.load(f)
+        rows = _board_cache_read(cache, top, label)
+        if rows is not None:
             print(f"[DATA_STALE] 板块{label}接口失败（{e}），改用本地缓存")
             return rows
         print(f"[DATA_STALE] 板块{label}接口失败且无缓存（{e}），跳过")
         return []
+
+
+# ---------------------------------------------------------------- 全市场快照
+SNAPSHOT_FIELDS = ("f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f21,f23,f24,f25,"
+                   "f37,f41,f46,f49,f62,f100,f115,f127,f128")
+
+
+def market_snapshot(fields=None, pz=100, workers=8, max_pages=70):
+    """全A股（沪深主板/创业板/科创板）快照，按成交额降序。
+
+    东财 clist 单页上限 100 条，全市场约 5600 只 → 约 56 次请求，多线程约 10~15 秒。
+    用途：市场宽度统计 与 AI 分析的候选来源。接口连续失败时提前返回已取到的部分，
+    调用方应按 len() 判断数据完整度（不足 3000 视为不完整，需降级）。
+    """
+    if not em_available("quote"):
+        return []
+    url = clist_base() + "/api/qt/clist/get"
+    fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+    fld = fields or SNAPSHOT_FIELDS
+
+    def page(pn):
+        """返回 (total, diff)；total 只有首页拿得到（后续页同样返回，取最后一次非空值即可）。"""
+        for i in range(2):  # 全市场页数多，单页最多重试2次，避免整体拖慢
+            try:
+                r = requests.get(url, params=dict(pn=pn, pz=pz, po=1, np=1, fltt=2, invt=2,
+                                                  fid="f6", fs=fs, fields=fld),
+                                 headers=HEADERS, timeout=20)
+                r.raise_for_status()
+                d = r.json().get("data") or {}
+                return d.get("total"), (d.get("diff") or [])
+            except Exception as e:
+                if i == 1:
+                    _em_fail("quote", e)
+                    return None, []
+                time.sleep(1.0)
+        return None, []
+
+    total, first = page(1)
+    if not first:
+        return []
+    pages = min(max_pages, ((total or 5600) + pz - 1) // pz)
+    rows = list(first)
+    if pages > 1:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for _, diff in ex.map(page, range(2, pages + 1)):
+                rows += diff
+    if len(rows) >= 3000:  # 完整性校验：正常约 5500+，明显偏少说明中途失败
+        _em_ok("quote")
+    else:
+        print(f"[DATA_PARTIAL] 全市场快照仅取得 {len(rows)} 条（预期约 {total}），将按不完整数据处理")
+    return rows
 
 
 # ---------------------------------------------------------------- 财务指标(F10)
@@ -275,6 +401,44 @@ def main_fin_data(secid, periods=8):
 def secucode(secid):
     market, code = secid.split(".")
     return f"{code}.{'SH' if market == '1' else 'SZ'}"
+
+
+def secid_of(code):
+    """由6位代码推 secid（1.=沪市 0.=深市）。"""
+    code = str(code)
+    return ("1." if code.startswith(("6", "9", "5")) else "0.") + code
+
+
+def live_prices(codes, date, fallback=None):
+    """批量取"当前真实价格"，准确性优先逐级降级：
+
+      1) 东财实时快照 —— 未复权真实成交价（权威口径）
+      2) 该日及之前的最后一根日K收盘（前复权；ETF/除息日与真实价可能有千分之一级偏差）
+      3) fallback[code]（如候选池里记录的旧收盘价，仅兜底）
+
+    组合估值、净值、仪表盘一律走这里，避免用"候选池生成当日"的旧价高估或低估。
+    """
+    fallback = fallback or {}
+    out = {}
+    for code in codes:
+        code = str(code)
+        sid = secid_of(code)
+        px = None
+        try:
+            px = snapshot(sid).get("price")
+        except Exception:
+            px = None
+        if not px:
+            try:
+                df = kline_until(sid, date)
+                px = float(df["close"].iloc[-1]) if len(df) else None
+            except Exception:
+                px = None
+        if not px:
+            px = fallback.get(code)
+        if px:
+            out[code] = float(px)
+    return out
 
 
 if __name__ == "__main__":

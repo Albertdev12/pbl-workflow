@@ -52,7 +52,7 @@ import reports
 import screening
 import validator
 import verify as verify_mod
-from em_client import industry_board_rank, kline, kline_until
+from em_client import industry_board_rank, kline, kline_until, live_prices
 
 CFG = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
 STATE_PATH = os.path.join(BASE, "data", "pipeline_state.json")
@@ -243,16 +243,10 @@ def run_daily(only_report=False):
     else:
         decisions = [d for d in records.read_decisions() if d["date"] == date]
 
-    # 4) 账户与净值
+    # 4) 账户与净值（取价：实时快照 > 最新K线 > 候选池旧价；避免用滞后价算净值）
     acct = pf.replay(pf.read_trades(), CFG["strategy"]["initial_capital"])
-    prices = {r["code"]: r["close"] for r in pool}
-    for code in acct["positions"]:
-        if code not in prices:
-            for u in CFG["universe"]:
-                if u["code"] == code:
-                    df = kline_until(u["secid"], date)
-                    if len(df):
-                        prices[code] = float(df["close"].iloc[-1])
+    prices = live_prices(set(list(acct["positions"]) + [r["code"] for r in pool]), date,
+                         {r["code"]: r["close"] for r in pool})
     total = pf.total_assets(acct, prices)
     records.save_snapshot(date, total, total / CFG["strategy"]["initial_capital"])
     set_state("PERFORMANCE_ANALYSIS")

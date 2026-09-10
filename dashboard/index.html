@@ -79,6 +79,9 @@
   <h2>今日待办</h2>
   <div class="card" id="todoBox"><div class="muted">加载中…</div></div>
 
+  <h2>AI 智能推荐（DeepSeek Flash）</h2>
+  <div class="card" id="aiBox"><div class="muted">加载中…</div></div>
+
   <h2>账户总览</h2>
   <div class="card"><div class="grid" id="kpis"><div class="muted">加载中…</div></div></div>
 
@@ -190,12 +193,53 @@ function loadData(){
     jget("benchmark.json").catch(e=>null),
     jget("todo.json").catch(e=>null),
     jget("verify.json").catch(e=>null),
+    jget("ai.json").catch(e=>null),
   ]).then(r=>{render(r);
     if(r[0].err)setStatus("加载失败："+r[0].err+"。请检查地址（应以 /data/dashboard/ 结尾），或点“恢复默认地址”；国内网络可换 jsDelivr 备选地址",true);
     else setStatus("加载成功（"+b+"）");
   });
 }
-function render([s,nav,decs,pool,mkt,bench,todos,vfy]){
+function renderAI(ai){
+  const box=$("aiBox"); if(!box) return;
+  if(!ai||!ai.generated_at){
+    box.innerHTML='<div class="muted">暂无 AI 分析结果。需在仓库 Settings→Secrets 配置 '
+      +'<b>DEEPSEEK_API_KEY</b>，之后每个交易日 08:50 / 14:00 / 16:00 自动生成。</div>';
+    return;
+  }
+  const sess={premarket:"盘前计划",intraday:"盘中分析",eod:"收盘复盘"}[ai.session]||ai.session||"";
+  const dq=ai.data_quality||{};
+  let h='<div class="sub">'+esc(ai.date)+' · '+esc(sess)+' · '+esc(ai.model)
+    +' · 生成于 '+esc(ai.generated_at)+' · 风险等级 <b>'+esc(ai.risk_level)+'</b></div>';
+  h+='<div style="margin:8px 0;line-height:1.6">'+esc(ai.market_view)+'</div>';
+  const picks=ai.picks||[];
+  if(picks.length){
+    h+='<table style="margin-top:6px"><tr><th>证券</th><th>操作</th><th>买入区间</th><th>止损</th>'
+      +'<th>目标</th><th>盈亏比</th><th>仓位</th></tr>';
+    picks.forEach(p=>{
+      h+='<tr><td><b>'+esc(p.name)+'</b><br><span class="tag">'+esc(p.code)+' '+esc(p.industry||"")+'</span></td>'
+        +'<td>'+esc(p.action)+'</td><td>'+esc(p.entry_low)+'~'+esc(p.entry_high)+'</td>'
+        +'<td class="dn">'+esc(p.stop)+'</td><td class="up">'+esc(p.target)+'</td>'
+        +'<td>'+esc(p.rr)+'</td><td>'+esc(p.position_pct)+'%</td></tr>'
+        +'<tr><td colspan="7" class="muted" style="padding-top:0">理由：'+esc(p.reason)
+        +'<br>风险：'+esc(p.risk)+'<br>参考收盘 '+esc(p.ref_close)+' · RSI '+esc(p.rsi14)
+        +' · PE '+esc(p.pe)+' · 距60日高 '+(p.dd_from_high60==null?"—":(p.dd_from_high60*100).toFixed(1)+"%")
+        +' · '+(p.bull_align?"均线多头":" ")+(p.above_ma60?"站上60日线":"")+'</td></tr>';
+    });
+    h+='</table>';
+  }else{
+    h+='<div class="muted">本次未给出买入推荐（可能判定当前不宜加仓）。</div>';
+  }
+  if((ai.avoid||[]).length) h+='<div class="warn" style="margin-top:8px">⚠ 回避：'+ai.avoid.map(esc).join("；")+'</div>';
+  if(ai.notes) h+='<div class="muted" style="margin-top:6px">执行提示：'+esc(ai.notes)+'</div>';
+  h+='<div class="muted" style="margin-top:8px;border-top:1px solid #2a3242;padding-top:6px">'
+    +'数据源：'+esc((dq["来源"]||[]).join(" + "))+' · '+esc(dq["校验"]||"")
+    +' · 候选 '+esc(dq["候选数"]||0)+' 只'
+    +((dq["剔除数据可疑"]||0)?' · 剔除数据可疑 '+esc(dq["剔除数据可疑"])+' 只':'')
+    +' · AI 结论仅供参考，请自行判断并承担风险</div>';
+  box.innerHTML=h;
+}
+
+function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
   $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at+(s.data_stale?" · ⚠ 行情源故障，数据未更新到最新":"");
                 if(s.data_stale){ $("asOf").style.color="#c0392b"; }
@@ -222,6 +266,8 @@ function render([s,nav,decs,pool,mkt,bench,todos,vfy]){
     kpi("验收完成度",s.completion+"%",s.completion==100?"dn":(s.completion>=80?"":"up"));
   // 今日待办
   renderTodos(todos||[]);
+  // AI 智能推荐
+  renderAI(ai);
   // 净值图（组合 vs 沪深300）
   drawChart(nav||[], bench||[]);
   // 决策后验证

@@ -2,10 +2,11 @@
 """云端运行入口（GitHub Actions / 任意装了Python的机器）。
 
 用法:
-    python cloud_run.py [eod|riskwatch|weekly|daily|report|review|dailyreport|data|validate]
+    python cloud_run.py [eod|ai|riskwatch|weekly|daily|report|review|dailyreport|data|validate]
 
-流程: 运行流水线 → 导出手机仪表盘JSON(data/dashboard/) → 在GitHub Actions环境中自动
-git提交回传账本与成果。本地运行(非Actions环境)只导出JSON，不提交。
+流程: 运行流水线 → DeepSeek 智能分析 → 导出手机仪表盘JSON(data/dashboard/) → 在GitHub
+Actions环境中自动git提交回传账本与成果。本地运行(非Actions环境)只导出JSON，不提交。
+AI 分析需要环境变量 DEEPSEEK_API_KEY（只从环境变量读取，绝不落盘）。
 """
 import datetime as dt
 import json
@@ -30,12 +31,43 @@ import benchmark  # noqa: E402
 import portfolio as pf  # noqa: E402
 import records  # noqa: E402
 import validator  # noqa: E402
-from em_client import kline_until  # noqa: E402
+from em_client import kline_until, live_prices, snapshot  # noqa: E402
+
+try:
+    import ai_advisor  # noqa: E402
+except Exception as _e:  # 缺依赖/文件时不影响其余流程
+    ai_advisor = None
+    print("[AI] 模块不可用，AI 分析将被跳过:", _e)
 
 DASH = os.path.join(BASE, "data", "dashboard")
 
 
+def safe_ai(session=None):
+    """DeepSeek 分析入口：任何异常都隔离在此，绝不影响主流水线。"""
+    if ai_advisor is None:
+        return None
+    if not CFG.get("ai", {}).get("enabled", True):
+        print("[AI] 配置中已禁用（config.json → ai.enabled=false），跳过")
+        return None
+    try:
+        return ai_advisor.run(session=session)
+    except Exception as e:
+        print("[AI] 异常已隔离，主流程继续:", str(e)[:200])
+        return None
+
+
 # ---------------------------------------------------------------- 仪表盘导出
+def _price_map(acct, pool, date):
+    """估值取价：委托 em_client.live_prices（快照 > 最新K线 > 候选池旧价）。
+
+    原实现直接采用候选池里记录的 close —— 那是"候选池生成当日"的收盘价，
+    在 14:00 盘中巡检 / 盘前 AI 等"不重建候选池"的运行里会滞后整整一个交易日，
+    导致仪表盘总资产、盈亏全部失真（实测偏差 2.9 万元）。
+    """
+    pool_close = {r["code"]: r["close"] for r in pool}
+    return live_prices(set(list(acct["positions"]) + list(pool_close)), date, pool_close)
+
+
 def _positions(acct, prices):
     out = []
     for code, pos in acct["positions"].items():
@@ -113,14 +145,7 @@ def export_dashboard():
     date, data_stale = data_freshness()
     pool = records.latest_pool()
     acct = pf.replay(pf.read_trades(), CFG["strategy"]["initial_capital"])
-    prices = {r["code"]: r["close"] for r in pool}
-    for code in acct["positions"]:
-        if code not in prices:
-            for u in CFG["universe"]:
-                if u["code"] == code:
-                    df = kline_until(u["secid"], date)
-                    if len(df):
-                        prices[code] = float(df["close"].iloc[-1])
+    prices = _price_map(acct, pool, date)
     total = pf.total_assets(acct, prices)
     rep = validator.validate()
 
@@ -243,8 +268,9 @@ def git_commit_push(task):
 
 # ---------------------------------------------------------------- 主入口
 TASKS = {
-    "eod": lambda: (run_daily(), run_review(), run_dailyreport()),
-    "riskwatch": run_riskwatch,
+    "eod": lambda: (run_daily(), run_review(), run_dailyreport(), safe_ai("eod")),
+    "riskwatch": lambda: (run_riskwatch(), safe_ai("intraday")),
+    "ai": lambda: safe_ai(),          # 时段按北京时间自动判定（盘前定时任务调用）
     "weekly": run_weekly,
     "daily": run_daily,
     "report": lambda: run_daily(only_report=True),
