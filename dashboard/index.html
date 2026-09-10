@@ -248,7 +248,36 @@ function renderAdvice(adv){
   if(!adv||!adv.rows||!adv.rows.length){box.innerHTML='<div class="muted">暂无持仓</div>';return;}
   const CLS={"止损":"dn","减仓":"dn","止盈":"up","观察":"","可加仓":"up","持有":""};
   let h='';
-  if(adv.reduce_hint) h+='<div class="warn" style="margin-bottom:8px">💡 '+esc(adv.reduce_hint)+'</div>';
+  if(adv.data_warning) h+='<div class="warn" style="border-color:#e08a8a;margin-bottom:8px">'+esc(adv.data_warning)+'</div>';
+  // ---------- 调仓执行单（具体股数）----------
+  const p=adv.plan;
+  if(p&&((p.sells||[]).length||(p.buys||[]).length)){
+    h+='<div class="warn" style="border-color:#f5c451;margin-bottom:10px">'
+      +'<b>📋 调仓执行单</b>　现金 '+esc(p.cash_pct_before)+'% → <b>'+esc(p.cash_pct_after)+'%</b>'
+      +'（目标 ≥'+esc(p.target_cash_pct)+'%）<br>';
+    if((p.sells||[]).length){
+      h+='<div style="margin-top:6px"><b>先卖</b>（合计 '+wan(p.sell_amount)+' 万元）</div>';
+      p.sells.forEach(s=>{
+        h+='<div class="order"><span class="dn">卖出</span> <b>'+esc(s.name)+'</b>（'+esc(s.code)+'） '
+          +'<b>'+fmt(s.shares)+' 股</b> @ '+esc(s.price)+' ≈ '+wan(s.amount)+'万'
+          +'<br><span class="tag">权重 '+esc(s.weight_before)+'%→'+esc(s.weight_after)+'% · '+esc(s.reason)+'</span></div>';
+      });
+    }
+    if((p.buys||[]).length){
+      h+='<div style="margin-top:6px"><b>后买</b>（合计 '+wan(p.buy_amount)+' 万元）</div>';
+      p.buys.forEach(b=>{
+        h+='<div class="order"><span class="up">买入</span> <b>'+esc(b.name)+'</b>（'+esc(b.code)+'） '
+          +'<b>'+fmt(b.shares)+' 股</b> @ '+esc(b.price)+' ≈ '+wan(b.amount)+'万'
+          +'<br><span class="tag">权重 '+esc(b.weight_before)+'%→'+esc(b.weight_after)+'% · '+esc(b.reason)+'</span></div>';
+      });
+    }
+    if(p.note) h+='<div class="muted" style="margin-top:6px">'+esc(p.note)+'</div>';
+    if(adv.ai_note) h+='<div style="margin-top:6px">🤖 <b>AI 复核</b>：'+esc(adv.ai_note)+'</div>';
+    h+='<div class="muted" style="margin-top:6px">按 '+esc(adv.date)+' 收盘价推算；实际下单请以当时盘口价为准，'
+      +'开盘高开或低开都会让股数略有偏差。</div></div>';
+  } else if(adv.reduce_hint){
+    h+='<div class="warn" style="margin-bottom:8px">💡 '+esc(adv.reduce_hint)+'</div>';
+  }
   h+='<table><tr><th>标的</th><th>占比</th><th>盈亏</th><th>操作</th><th>依据</th></tr>';
   adv.rows.forEach(r=>{
     h+='<tr><td><b>'+esc(r.name)+'</b><br><span class="tag">'+esc(r.code)+' '+fmt(r.shares)+'股</span></td>'

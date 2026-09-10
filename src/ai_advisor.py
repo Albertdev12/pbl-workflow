@@ -194,7 +194,8 @@ def collect(date, cand_n=40):
 
     import portfolio as pf
     import records
-    st = json.load(open(CONFIG, encoding="utf-8"))["strategy"]
+    CFG_ALL = json.load(open(CONFIG, encoding="utf-8"))
+    st = CFG_ALL["strategy"]
     acct = pf.replay(pf.read_trades(), st["initial_capital"])
     # 持仓估值：优先用全市场快照里的真实成交价；ETF 等不在A股快照中的标的单独取快照
     prices = {}
@@ -212,6 +213,15 @@ def collect(date, cand_n=40):
             "positions": [{"code": c, "name": p["name"], "shares": p["shares"],
                            "cost": round(p["cost"], 3), "price": prices.get(c)}
                           for c, p in acct["positions"].items()]}
+    # 把"规则版持仓判断 + 具体股数的调仓执行单"一并交给模型复核
+    try:
+        import advice as advice_mod
+        adv = advice_mod.holding_advice(acct, prices, CFG_ALL, date, total=total, cash=acct["cash"])
+        port["持仓判断"] = [{"名称": r["name"], "操作": r["action"],
+                             "依据": "；".join(r["reasons"])[:70]} for r in adv["rows"]]
+        port["调仓执行单"] = advice_mod.plan_brief(adv.get("plan"))
+    except Exception as e:
+        print("[AI] 调仓执行单生成失败（不影响分析）:", str(e)[:100])
 
     try:
         top = [{"name": b["name"], "pct": b["pct"]} for b in industry_board_rank(5)]
@@ -240,10 +250,13 @@ SCHEMA = """输出JSON结构（严格遵守字段名）：
    "entry_low":数字,"entry_high":数字,"stop":数字,"target":数字,
    "horizon":"持有周期如1-3周","position_pct":整数(占组合%%,0-20),
    "reason":"买入理由,<=80字","risk":"主要风险,<=50字"}],
- "avoid":["需回避的方向,<=3条"],"notes":"执行提示,<=80字"}
+ "avoid":["需回避的方向,<=3条"],"notes":"执行提示,<=80字",
+ "rebalance_note":"对 portfolio.调仓执行单 的复核意见,<=120字。逐笔判断该卖/该买的股数是否合理；
+   若你认为某笔不该做（例如不该卖底仓ETF）、或应改为减别的标的，必须直接说出来并给出你的股数建议"}
 要求：picks 最多6只，按信心从高到低排序；代码必须出自 candidates；
 entry_low/entry_high 应在现价附近(±3%%)；stop 不低于现价的-10%%；target 不高于现价的+20%%；
-必须结合给出的技术指标(均线/RSI/距60日高点)与市场宽度，不要只看涨幅。"""
+必须结合给出的技术指标(均线/RSI/距60日高点)与市场宽度，不要只看涨幅。
+算术必须准确：不要自己编造股数，复核时以调仓执行单里的数字为准。"""
 
 
 def _messages(ctx, session):
@@ -362,6 +375,7 @@ def sanitize(rec, ctx):
         rec["risk_level"] = "中性"
     rec["avoid"] = [str(x)[:60] for x in (rec.get("avoid") or [])][:3]
     rec["notes"] = str(rec.get("notes") or "")[:120]
+    rec["rebalance_note"] = str(rec.get("rebalance_note") or "")[:200]
     return rec
 
 

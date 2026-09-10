@@ -28,7 +28,7 @@ from main import (CFG, run_daily, run_dailyreport, run_data, run_market,  # noqa
                   run_pool, run_review, run_riskwatch, run_verify, run_weekly,
                   benchmark_pct_since, last_trading_date, data_freshness)
 import benchmark  # noqa: E402
-import indicators  # noqa: E402
+from advice import holding_advice  # noqa: E402
 import portfolio as pf  # noqa: E402
 import records  # noqa: E402
 import validator  # noqa: E402
@@ -83,117 +83,6 @@ def _positions(acct, prices):
         })
     out.sort(key=lambda x: -x["value"])
     return out
-
-
-def holding_advice(acct, prices, date):
-    """逐只持仓的「减仓/加仓/持有」判断——规则驱动、可解释、无需AI密钥。
-
-    判断顺序（先纪律、后趋势、再基本面）：
-      1) 触及止盈/止损线            → 止盈 / 止损
-      2) 跌破60日线                 → 减仓（中期趋势走坏）
-      3) 跌破20日线 / RSI>78        → 观察（短线转弱或超买）
-      4) 趋势+基本面双优且仓位有余   → 可加仓
-      5) 其余                       → 持有
-    现金低于策略下限时会附上提示：加仓前必须先腾出现金。
-    """
-    st = CFG["strategy"]
-    total = pf.total_assets(acct, prices)
-    cash_pct = (acct["cash"] / total * 100) if total else 0
-    low_cash = cash_pct < st["min_cash_pct"] * 100
-    out = []
-    for code, pos in acct["positions"].items():
-        px = prices.get(code, pos["cost"])
-        pnl = (px / pos["cost"] - 1) * 100 if pos["cost"] else 0
-        weight = (px * pos["shares"] / total * 100) if total else 0
-        ind, fin = {}, {}
-        try:
-            ind = indicators.compute(kline(secid_of(code), cache=False))
-        except Exception:
-            pass
-        if code.startswith(("60", "00", "30")):  # ETF 无财务指标
-            try:
-                f = main_fin_data(secid_of(code))
-                fin = f[0] if f else {}
-            except Exception:
-                pass
-        ma20, ma60, rsi = ind.get("ma20"), ind.get("ma60"), ind.get("rsi14")
-        kind = next((u.get("kind") for u in CFG["universe"] if u["code"] == code), "stock")
-        reasons, action = [], "持有"
-        if pnl >= st["take_profit_pct"] * 100:
-            action = "止盈"
-            reasons.append(f"浮盈{pnl:.1f}%已达止盈线{st['take_profit_pct']*100:.0f}%")
-        elif pnl <= -st["stop_loss_pct"] * 100:
-            action = "止损"
-            reasons.append(f"浮亏{pnl:.1f}%已达止损线-{st['stop_loss_pct']*100:.0f}%")
-        else:
-            broken60 = bool(ma60 and px < ma60)
-            if broken60:
-                if kind == "etf" and weight < st.get("etf_target_weight", 0.30) * 100:
-                    # 宽基底仓：跌破均线但按策略设计仍欠配 → 不动它，避免"卖在低点"
-                    action = "观察"
-                    reasons.append(f"跌破60日线{ma60:.2f}，但底仓目标权重"
-                                   f"{st.get('etf_target_weight', 0.30)*100:.0f}%、当前仅{weight:.1f}%属欠配，维持配置")
-                else:
-                    action = "减仓"
-                    reasons.append(f"现价{px}跌破60日线{ma60:.2f}，中期趋势走坏")
-            elif ma20 and px < ma20:
-                action = "观察"
-                reasons.append(f"现价{px}跌破20日线{ma20:.2f}，短线转弱不加仓")
-            if rsi and rsi > 78 and action == "持有":
-                action = "观察"
-                reasons.append(f"RSI={rsi:.0f}超买，短期回调风险")
-            if ind.get("bull_align"):
-                reasons.append("均线多头排列")
-            elif ind.get("above_ma60"):
-                reasons.append("站上60日线")
-            ny, ry = fin.get("net_profit_yoy"), fin.get("revenue_yoy")
-            roe = fin.get("roe")
-            stalled = False
-            if ny is not None and ry is not None:
-                if ny < 0 and ry < 0 and action in ("持有", "观察"):
-                    action = "减仓"
-                    reasons.append(f"营收/净利双降（{ry:.0f}%/{ny:.0f}%），基本面恶化")
-                elif ny < 5 and ry < 5:
-                    stalled = True
-                    reasons.append(f"增长停滞（营收{ry:.1f}%、净利{ny:.1f}%）")
-                else:
-                    reasons.append(f"ROE {roe:.1f}%、净利同比{ny:+.0f}%、营收同比{ry:+.0f}%")
-            # 加仓门槛：趋势健康 + 未超买 + 增长有意义 + 加仓5%后仍不超过单只上限的90%
-            cap_ok = weight + 5 <= st["max_single_position_pct"] * 100 * 0.9
-            if (action == "持有" and ma20 and ma60 and px > ma20 and ma20 > ma60
-                    and rsi and 40 <= rsi <= 70 and cap_ok and not stalled
-                    and (roe or 0) >= 6 and (ny or 0) >= 10):
-                action = "可加仓"
-                reasons.append(f"仓位{weight:.1f}%距上限仍有空间"
-                               + ("；但现金不足，需先减仓腾出资金" if low_cash else ""))
-            if not reasons:
-                reasons.append("无明确信号")
-        out.append({"code": code, "name": pos.get("name", code), "shares": pos["shares"],
-                    "price": px, "cost": round(pos["cost"], 3), "pnl_pct": round(pnl, 2),
-                    "weight": round(weight, 1), "action": action, "reasons": reasons,
-                    "ma20": round(ma20, 3) if ma20 else None,
-                    "ma60": round(ma60, 3) if ma60 else None,
-                    "rsi": round(rsi, 1) if rsi else None,
-                    "roe": roe, "np_yoy": ny, "stalled": stalled})
-    order = {"止损": 0, "减仓": 1, "止盈": 2, "观察": 3, "可加仓": 4, "持有": 5}
-    out.sort(key=lambda r: (order.get(r["action"], 9), -r["weight"]))
-    # 现金不足时，自动指出"最该减持哪只"：优先挑「持有/可加仓」中增长停滞或增速最低的
-    hint = None
-    if low_cash:
-        pool_ = [r for r in out if r["action"] in ("持有", "可加仓") and r["stalled"] is not None]
-        if not pool_:
-            pool_ = [r for r in out if r["action"] == "持有"]
-        if pool_:
-            t = min(pool_, key=lambda r: (0 if r["stalled"] else 1, r["np_yoy"] or 0))
-            need = total * st["min_cash_pct"] - acct["cash"]
-            hint = (f"现金占比{cash_pct:.1f}%低于下限{st['min_cash_pct']*100:.0f}%，"
-                    f"回到下限需腾出约{need/10000:.1f}万元。"
-                    f"按「趋势未坏但基本面最弱」筛选，优先减持【{t['name']}】"
-                    f"（{'增长停滞：' if t['stalled'] else '净利增速最低：'}"
-                    f"净利同比{t['np_yoy']:+.1f}%）；减持后现金即可回到纪律区间。")
-    return {"date": date, "cash_pct": round(cash_pct, 1), "cash": acct["cash"],
-            "total": total, "low_cash": low_cash, "reduce_hint": hint,
-            "min_cash_pct": st["min_cash_pct"] * 100, "rows": out}
 
 
 def _jdump(name, obj):
@@ -318,12 +207,23 @@ def export_dashboard():
     }
     _jdump("summary.json", summary)
     _jdump("nav.json", records.read_nav())
-    # 持仓操作建议（减仓/加仓/持有，规则驱动、无需AI密钥）
+    # 持仓操作建议 + 调仓执行单（规则驱动、无需AI密钥；AI 复核意见可选叠加）
     try:
-        adv = holding_advice(acct, prices, date)
+        adv = holding_advice(acct, prices, CFG, date, total=total, cash=acct["cash"])
+        try:
+            ai_rec = json.load(open(os.path.join(DASH, "ai.json"), encoding="utf-8"))
+            if ai_rec.get("date") == date and ai_rec.get("rebalance_note"):
+                adv["ai_note"] = ai_rec["rebalance_note"]
+                adv["ai_at"] = ai_rec.get("generated_at")
+        except Exception:
+            pass
         _jdump("holdings.json", adv)
         print("[仪表盘] 持仓建议: " + "；".join(
             f"{r['name']}={r['action']}" for r in adv["rows"]))
+        pl = adv.get("plan") or {}
+        if pl.get("sells") or pl.get("buys"):
+            print(f"[调仓执行单] 卖 {len(pl.get('sells', []))} 笔 / 买 {len(pl.get('buys', []))} 笔，"
+                  f"现金 {pl.get('cash_pct_before')}% → {pl.get('cash_pct_after')}%")
     except Exception as e:
         print("[仪表盘] 持仓建议导出失败:", str(e)[:150])
     # 净值 vs 沪深300：同一批日期、同起点归一
