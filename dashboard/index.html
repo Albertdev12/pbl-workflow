@@ -94,6 +94,9 @@
   <h2>当前持仓</h2>
   <div class="card" id="posBox"><div class="muted">加载中…</div></div>
 
+  <h2>持仓操作建议</h2>
+  <div class="card" id="adviceBox"><div class="muted">加载中…</div></div>
+
   <h2>最近决策</h2>
   <div class="card" id="decBox"><div class="muted">加载中…</div></div>
 
@@ -194,6 +197,7 @@ function loadData(){
     jget("todo.json").catch(e=>null),
     jget("verify.json").catch(e=>null),
     jget("ai.json").catch(e=>null),
+    jget("holdings.json").catch(e=>null),
   ]).then(r=>{render(r);
     if(r[0].err)setStatus("加载失败："+r[0].err+"。请检查地址（应以 /data/dashboard/ 结尾），或点“恢复默认地址”；国内网络可换 jsDelivr 备选地址",true);
     else setStatus("加载成功（"+b+"）");
@@ -239,7 +243,26 @@ function renderAI(ai){
   box.innerHTML=h;
 }
 
-function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai]){
+function renderAdvice(adv){
+  const box=$("adviceBox"); if(!box) return;
+  if(!adv||!adv.rows||!adv.rows.length){box.innerHTML='<div class="muted">暂无持仓</div>';return;}
+  const CLS={"止损":"dn","减仓":"dn","止盈":"up","观察":"","可加仓":"up","持有":""};
+  let h='';
+  if(adv.reduce_hint) h+='<div class="warn" style="margin-bottom:8px">💡 '+esc(adv.reduce_hint)+'</div>';
+  h+='<table><tr><th>标的</th><th>占比</th><th>盈亏</th><th>操作</th><th>依据</th></tr>';
+  adv.rows.forEach(r=>{
+    h+='<tr><td><b>'+esc(r.name)+'</b><br><span class="tag">'+esc(r.code)+' '+fmt(r.shares)+'股</span></td>'
+      +'<td>'+esc(r.weight)+'%</td>'
+      +'<td class="'+cls(r.pnl_pct)+'">'+sign(r.pnl_pct)+'%</td>'
+      +'<td class="'+(CLS[r.action]||"")+'"><b>'+esc(r.action)+'</b></td>'
+      +'<td class="muted">'+r.reasons.map(esc).join('<br>')+'</td></tr>';
+  });
+  h+='</table><div class="muted" style="margin-top:6px">依据：止盈止损线 / 20-60日均线 / RSI / ROE与净利增速 / '
+    +'单只持仓上限 / 现金下限（规则驱动，不依赖AI密钥）。数据截止 '+esc(adv.date)+'。</div>';
+  box.innerHTML=h;
+}
+
+function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai,adv]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
   $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at+(s.data_stale?" · ⚠ 行情源故障，数据未更新到最新":"");
                 if(s.data_stale){ $("asOf").style.color="#c0392b"; }
@@ -268,6 +291,8 @@ function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai]){
   renderTodos(todos||[]);
   // AI 智能推荐
   renderAI(ai);
+  // 持仓操作建议
+  renderAdvice(adv);
   // 净值图（组合 vs 沪深300）
   drawChart(nav||[], bench||[]);
   // 决策后验证
