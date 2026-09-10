@@ -195,34 +195,41 @@ def snapshot(secid):
 
 # ---------------------------------------------------------------- 行业板块
 BOARD_CACHE = os.path.join(DATA_DIR, "board_rank_cache.json")
+BOARD_CACHE_DOWN = os.path.join(DATA_DIR, "board_rank_cache_down.json")
 
 
-def industry_board_rank(top=15):
-    """东财行业板块涨幅榜 [{name, pct, lead_stock}]。接口失败时回退本地缓存，缓存也没有则返回空列表。"""
+def industry_board_rank(top=15, asc=False):
+    """东财行业板块涨跌幅榜 [{name, pct, lead_stock}]，asc=True 取跌幅榜。
+
+    注意：原先取"领跌板块"用的是涨幅榜的末5位（即第11~15名上涨板块），口径错误；
+    跌幅榜必须用 po=0（按涨跌幅升序）单独请求。缓存分文件存放，互不覆盖。
+    """
     url = "http://push2.eastmoney.com/api/qt/clist/get"
-    params = dict(pn=1, pz=top, po=1, np=1, fltt=2, invt=2, fid="f3",
+    params = dict(pn=1, pz=top, po=0 if asc else 1, np=1, fltt=2, invt=2, fid="f3",
                   fs="m:90+t:2", fields="f3,f14,f136,f128")
+    cache = BOARD_CACHE_DOWN if asc else BOARD_CACHE
+    label = "跌幅榜" if asc else "涨幅榜"
     if not em_available("quote"):
-        if os.path.exists(BOARD_CACHE):
-            with open(BOARD_CACHE, encoding="utf-8") as f:
+        if os.path.exists(cache):
+            with open(cache, encoding="utf-8") as f:
                 return json.load(f)
         return []
     try:
         j = _get(url, params)
         diff = (j.get("data") or {}).get("diff") or []
         rows = [{"name": d.get("f14"), "pct": d.get("f3"), "lead": d.get("f128")} for d in diff]
-        with open(BOARD_CACHE, "w", encoding="utf-8") as f:
+        with open(cache, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
         _em_ok("quote")
         return rows
     except Exception as e:
         _em_fail("quote", e)
-        if os.path.exists(BOARD_CACHE):
-            with open(BOARD_CACHE, encoding="utf-8") as f:
+        if os.path.exists(cache):
+            with open(cache, encoding="utf-8") as f:
                 rows = json.load(f)
-            print(f"[DATA_STALE] 板块涨幅榜接口失败（{e}），改用本地缓存")
+            print(f"[DATA_STALE] 板块{label}接口失败（{e}），改用本地缓存")
             return rows
-        print(f"[DATA_STALE] 板块涨幅榜接口失败且无缓存（{e}），跳过")
+        print(f"[DATA_STALE] 板块{label}接口失败且无缓存（{e}），跳过")
         return []
 
 

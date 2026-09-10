@@ -141,16 +141,27 @@ def market_observe(date):
                 "pct": (df["close"].iloc[-1] / df["close"].iloc[-2] - 1) * 100,
             }
     sh = kline_until("1.000001", date, is_index=True).tail(6)
-    if sh["amount"].notna().any():  # 备用数据源下指数成交额不可用 → 降级
+    sz = kline_until("0.399001", date, is_index=True).tail(6)
+    turnover_scope = "sh+sz"
+    if sh["amount"].notna().any() and sz["amount"].notna().any():
+        # 两市成交额 = 沪市(上证指数) + 深市(深证成指) 成交额
+        # 原实现只取上证指数 amount，数值约为真实两市的 45%~50%，口径与"两市"不符
+        turnover = float(sh["amount"].iloc[-1] + sz["amount"].iloc[-1]) / 1e8  # 亿元
+        avg5 = float(sh["amount"].tail(6).head(5).mean()
+                     + sz["amount"].tail(6).head(5).mean()) / 1e8
+    elif sh["amount"].notna().any():  # 深市成交额不可用 → 降级为沪市口径并标注
+        turnover_scope = "sh_only"
         turnover = float(sh["amount"].iloc[-1]) / 1e8  # 亿元
         avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
     else:
         turnover = avg5 = None
     try:
-        boards = industry_board_rank(15)
+        boards = industry_board_rank(15)                  # 涨幅榜
+        boards_down = industry_board_rank(5, asc=True)    # 真实跌幅榜（po=0 升序）
     except Exception as e:
-        print(f"  [警告] 板块涨幅榜获取失败: {e}")
+        print(f"  [警告] 板块涨跌幅榜获取失败: {e}")
         boards = []
+        boards_down = []
     hs300 = indices.get("沪深300", {})
     above_ma20 = False
     df300 = kline_until(CFG["strategy"]["market_benchmark"], date, is_index=True)
@@ -161,8 +172,9 @@ def market_observe(date):
         view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
                 f"{'站上' if above_ma20 else '跌破'}20日均线；成交额数据暂不可用（备用数据源口径）。")
     else:
+        scope_txt = "两市成交额" if turnover_scope == "sh+sz" else "沪市成交额（深市数据不可用）"
         view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
-                f"{'站上' if above_ma20 else '跌破'}20日均线；两市成交额约{turnover:.0f}亿元，"
+                f"{'站上' if above_ma20 else '跌破'}20日均线；{scope_txt}约{turnover:.0f}亿元，"
                 f"较前5日均量{'放大' if turnover > avg5 else '萎缩'}"
                 f"（前5日均值约{avg5:.0f}亿元），市场{'活跃度提升' if turnover > avg5 else '情绪偏谨慎'}。")
     lead_names = {b["name"] for b in boards[:5]}
@@ -184,8 +196,9 @@ def market_observe(date):
         "date": date,
         "indices": indices,
         "turnover": turnover,
+        "turnover_scope": turnover_scope,
         "top_boards": [{"name": b["name"], "pct": b["pct"]} for b in boards[:5]],
-        "bottom_boards": [{"name": b["name"], "pct": b["pct"]} for b in boards[-5:]],
+        "bottom_boards": [{"name": b["name"], "pct": b["pct"]} for b in boards_down[:5]],
         "view": view,
         "opportunity": opp,
         "risks": "；".join(risks),

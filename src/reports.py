@@ -268,8 +268,8 @@ def market_watch_xlsx():
     data = []
     for r in rows:
         idx = r["indices"]
-        top = "、".join(f"{b['name']}({b['pct']}%)" for b in r["top_boards"][:5])
-        bot = "、".join(f"{b['name']}({b['pct']}%)" for b in r["bottom_boards"][:5])
+        top = "、".join(f"{b['name']}({b['pct']}%)" for b in r.get("top_boards", [])[:5]) or "—"
+        bot = "、".join(f"{b['name']}({b['pct']}%)" for b in r.get("bottom_boards", [])[:5]) or "—"
         def _idx(name):
             v = idx.get(name)
             return f"{v['close']:.2f}（{v['pct']:+.2f}%）" if v else "—"
@@ -278,7 +278,9 @@ def market_watch_xlsx():
             _idx("上证指数"),
             _idx("深证成指"),
             _idx("沪深300"),
-            (f"{r['turnover']:.0f}亿元" if r.get("turnover") is not None else "数据源暂不可用"), top, bot,
+            (f"{r['turnover']:.0f}亿元"
+             + ("（沪+深）" if r.get("turnover_scope", "sh+sz") == "sh+sz" else "（仅沪市）")
+             if r.get("turnover") is not None else "数据源暂不可用"), top, bot,
             r["view"], r["opportunity"], r["risks"],
         ])
     _xlsx_sheet(wb, "市场观察记录",
