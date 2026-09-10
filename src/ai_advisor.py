@@ -391,8 +391,13 @@ def latest():
 
 
 # ---------------------------------------------------------------- 主入口
-def run(session=None, date=None):
-    """执行一次 AI 分析并落盘。返回结果 dict；跳过/失败时返回 None（不影响主流程）。"""
+def run(session=None, date=None, force=False):
+    """执行一次 AI 分析并落盘。返回结果 dict；跳过/失败时返回 None（不影响主流程）。
+
+    幂等：同一"交易日+时段"只生成一次。GitHub 定时任务实测会延迟 2~7 小时且常被丢弃，
+    因此挂了多个冗余 cron 作安全网——幂等让冗余变成免费（不会重复调用API、不会重复提交、
+    也不会互相覆盖仪表盘）。需要强制重跑时设环境变量 AI_FORCE=1。
+    """
     ok, until = active(date)
     if not ok:
         _log(f"[AI] 已超过运行截止日 {until}，跳过 AI 分析")
@@ -402,6 +407,12 @@ def run(session=None, date=None):
         return None
     date = date or dt.date.today().isoformat()
     session = session or session_now()
+    force = force or os.environ.get("AI_FORCE") == "1"
+    if not force:
+        prev = latest()
+        if prev and prev.get("date") == date and prev.get("session") == session:
+            _log(f"[AI] {date} {session} 本时段已生成过（{prev.get('generated_at')}），跳过重复分析")
+            return prev
     t0 = time.time()
     try:
         ctx = collect(date, cand_n=int(cfg().get("candidate_pool", 40)))
