@@ -375,7 +375,7 @@ def sanitize(rec, ctx):
         rec["risk_level"] = "中性"
     rec["avoid"] = [str(x)[:60] for x in (rec.get("avoid") or [])][:3]
     rec["notes"] = str(rec.get("notes") or "")[:120]
-    rec["rebalance_note"] = str(rec.get("rebalance_note") or "")[:200]
+    rec["rebalance_note"] = str(rec.get("rebalance_note") or "")[:400]
     return rec
 
 
