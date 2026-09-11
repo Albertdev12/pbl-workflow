@@ -145,6 +145,7 @@
 <script>
 const $=id=>document.getElementById(id);
 const DEFAULT_BASE="https://raw.githubusercontent.com/Albertdev12/pbl-workflow/main/data/dashboard/";
+const ALT_BASE="https://albertdev12.github.io/pbl-workflow/data/dashboard/";
 let memBase=null;
 function norm(u){u=(u||"").trim();if(!u)return "";if(!/\/$/.test(u))u+="/";return u;}
 function getBase(){
@@ -177,31 +178,35 @@ function loadCfg(){
   $("base").value=getBase();
   try{$("repo").value=localStorage.getItem("pbl_repo")||"";}catch(e){}
 }
-async function jget(name){
-  const u=base()+name+"?t="+Date.now();
+async function jgetAt(b,name){
+  const u=b+name+"?t="+Date.now();
   const r=await fetch(u,{cache:"no-store"});
   if(!r.ok) throw new Error(name+" HTTP"+r.status);
   return r.json();
 }
-function loadData(){
+async function jget(name){ return jgetAt(base(),name); }
+async function loadData(){
   const b=base();
   if(!b){$("asOf").textContent="未配置数据地址";return;}
   setStatus("正在从 "+b+" 加载数据…");
-  Promise.all([
-    jget("summary.json").catch(e=>({err:e.message})),
-    jget("nav.json").catch(e=>null),
-    jget("decisions.json").catch(e=>null),
-    jget("pool.json").catch(e=>null),
-    jget("market.json").catch(e=>null),
-    jget("benchmark.json").catch(e=>null),
-    jget("todo.json").catch(e=>null),
-    jget("verify.json").catch(e=>null),
-    jget("ai.json").catch(e=>null),
-    jget("holdings.json").catch(e=>null),
-  ]).then(r=>{render(r);
-    if(r[0].err)setStatus("加载失败："+r[0].err+"。请检查地址（应以 /data/dashboard/ 结尾），或点“恢复默认地址”；国内网络可换 jsDelivr 备选地址",true);
-    else setStatus("加载成功（"+b+"）");
-  });
+  // 双源取新：raw 与 Pages 两个 CDN 的缓存节奏不同，推送后常出现一个已更新、另一个还是旧的。
+  // 同时取两边的 summary.json，比较 updated_at，用较新的那一份作为本次的数据源。
+  const alt=ALT_BASE;
+  const [s1,s2]=await Promise.all([
+    jgetAt(b,"summary.json").catch(()=>null),
+    (b===alt?Promise.resolve(null):jgetAt(alt,"summary.json").catch(()=>null)),
+  ]);
+  let src=b, s=s1;
+  if(s1&&s2&&(s2.updated_at||"")>(s1.updated_at||"")){s=s2;src=alt;}
+  else if(!s1&&s2){s=s2;src=alt;}
+  if(!s){$("asOf").innerHTML='<span class="err">数据加载失败：请检查数据地址（应以 /data/dashboard/ 结尾），'
+    +'或点“恢复默认地址”</span>';setStatus("加载失败",true);return;}
+  const rd=n=>jgetAt(src,n).catch(()=>null);
+  const r=await Promise.all([Promise.resolve(s),rd("nav.json"),rd("decisions.json"),
+    rd("pool.json"),rd("market.json"),rd("benchmark.json"),rd("todo.json"),
+    rd("verify.json"),rd("ai.json"),rd("holdings.json")]);
+  render(r);
+  setStatus("加载成功（"+src+(src!==b?" · 已自动选用较新的数据源":"")+"）");
 }
 function renderAI(ai){
   const box=$("aiBox"); if(!box) return;
