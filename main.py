@@ -143,15 +143,19 @@ def market_observe(date):
     sh = kline_until("1.000001", date, is_index=True).tail(6)
     sz = kline_until("0.399001", date, is_index=True).tail(6)
     turnover_scope = "sh+sz"
-    if sh["amount"].notna().any() and sz["amount"].notna().any():
+    # 必须校验"最后一根"的成交额，而不是任意一根：盘中运行时当日K线未走完，成交额可能是 NaN，
+    # 旧写法 notna().any() 会被前几日数据骗过，把 nan 写进"两市成交额"（09-11 实际发生过）。
+    a_sh = sh["amount"].iloc[-1] if len(sh) else float("nan")
+    a_sz = sz["amount"].iloc[-1] if len(sz) else float("nan")
+    if a_sh == a_sh and a_sz == a_sz:  # NaN != NaN，用这个特性挡掉 NaN
         # 两市成交额 = 沪市(上证指数) + 深市(深证成指) 成交额
         # 原实现只取上证指数 amount，数值约为真实两市的 45%~50%，口径与"两市"不符
-        turnover = float(sh["amount"].iloc[-1] + sz["amount"].iloc[-1]) / 1e8  # 亿元
+        turnover = float(a_sh + a_sz) / 1e8  # 亿元
         avg5 = float(sh["amount"].tail(6).head(5).mean()
                      + sz["amount"].tail(6).head(5).mean()) / 1e8
-    elif sh["amount"].notna().any():  # 深市成交额不可用 → 降级为沪市口径并标注
+    elif a_sh == a_sh:  # 深市成交额不可用 → 降级为沪市口径并标注
         turnover_scope = "sh_only"
-        turnover = float(sh["amount"].iloc[-1]) / 1e8  # 亿元
+        turnover = float(a_sh) / 1e8  # 亿元
         avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
     else:
         turnover = avg5 = None

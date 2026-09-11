@@ -38,18 +38,25 @@ jobs:
       - name: 安装中文字体（图表用，失败不影响主流程）
         run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk || echo "字体安装失败，图表中文可能显示为方框"
       - name: 选择任务
+        # 关键：按"实际到达时的北京时间"决定做什么，而不是按触发它的 cron 槽位。
+        # GitHub 定时任务实测会延迟 2~7 小时，按槽位判断会把盘前任务误判成 eod，
+        # 于是在盘中用不完整的当日K线跑完整流水线（09-11 已实际发生：成交额写成 nan）。
+        # 注意 job 级 env 已设 TZ=Asia/Shanghai，故 date 即北京时间。
         run: |
+          H=$(date +%H); M=$(date +%M); WD=$(date +%u)
           if [ -n "${{ inputs.task }}" ]; then
-            echo "TASK=${{ inputs.task }}" >> $GITHUB_ENV
-          elif [ "$(date -u +%H)" = "00" ]; then
-            echo "TASK=ai" >> $GITHUB_ENV
-          elif [ "$(date +%u)" = "6" ]; then
-            echo "TASK=weekly" >> $GITHUB_ENV
-          elif [ "$(date -u +%H)" = "06" ]; then
-            echo "TASK=riskwatch" >> $GITHUB_ENV
+            TASK="${{ inputs.task }}"
+          elif [ "$WD" = "6" ]; then
+            TASK=weekly                                  # 周六：周报
+          elif [ "$H" -lt 9 ] || { [ "$H" = "09" ] && [ "$M" -lt 25 ]; }; then
+            TASK=ai                                      # 09:25 前：盘前计划
+          elif [ "$H" -lt 15 ]; then
+            TASK=riskwatch                               # 09:25~15:00：盘中风控
           else
-            echo "TASK=eod" >> $GITHUB_ENV
+            TASK=eod                                     # 15:00 后：收盘全流程
           fi
+          echo "TASK=$TASK" >> $GITHUB_ENV
+          echo "北京时间 $(date +'%F %H:%M')，本次执行任务：$TASK"
       - name: 运行流水线
         # 密钥只注入这一步（不放到 job 级 env），缩小暴露面；日志中绝不打印该变量
         env:
