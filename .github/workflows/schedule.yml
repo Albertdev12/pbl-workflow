@@ -61,7 +61,14 @@ jobs:
         # 密钥只注入这一步（不放到 job 级 env），缩小暴露面；日志中绝不打印该变量
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: python cloud_run.py $TASK
+        # 收盘全流程额外生成全市场《明日买入建议》（仪表盘 picks.json 的上游）；
+        # 其余时段任务不跑全市场筛选，避免每次多花几分钟。
+        run: |
+          if [ "$TASK" = "eod" ] || [ "$TASK" = "report" ]; then
+            python cloud_run.py $TASK --with-picks
+          else
+            python cloud_run.py $TASK
+          fi
       - name: 失败告警（自动开Issue）
         if: failure()
         env:
