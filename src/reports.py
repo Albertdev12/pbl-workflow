@@ -512,37 +512,27 @@ def trades_xlsx(cfg):
 
 # ================================================================ 10 策略调整记录
 def backtest_blocks():
-    """解析 data/backtest_result.txt 中的 JSON 结果块 → {策略名: {指标}}。"""
-    import json as _json
-    path = os.path.join(BASE, "data", "backtest_result.txt")
-    if not os.path.exists(path):
-        return {}
-    blocks, title, buf = {}, None, []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if s.startswith("=== ") and s.endswith(" ==="):
-                if title and buf:
-                    blocks[title] = "".join(buf)
-                title, buf = s[4:-4], []
-            elif title is not None:
-                if not s and buf:
-                    blocks[title] = "".join(buf)
-                    title, buf = None, []
-                else:
-                    buf.append(line)
-    if title and buf:
-        blocks[title] = "".join(buf)
-    parsed = {}
-    for k, v in blocks.items():
-        try:
-            parsed[k] = _json.loads(v)
-        except Exception:
-            pass
-    return parsed
+    """解析 data/backtest_result.txt 中的 JSON 结果块 → {段落标题: {指标}}。
+
+    标题里含全角括号（如 "对照：…（'选股池本身'的收益）===" ）时 "===" 前没有空格，
+    旧实现按 " ===" 精确切分会把这类段落整段漏掉；这里统一委托给 brief.backtest_blocks()。
+    """
+    import brief
+    return brief.backtest_blocks()
+
+
+def _bt_meta():
+    import brief
+    return brief.backtest_meta()
+
+
+def _bt_by_strategy(sub):
+    import brief
+    return brief._bt_by_strategy(sub)
 
 
 def strategy_docx(cfg, pool):
+    import brief
     st = cfg["strategy"]
     bt = backtest_blocks()
     doc = Document()
@@ -569,18 +559,17 @@ def strategy_docx(cfg, pool):
          "云端连续运行不再因单一数据源抖动中断", "两套复权口径混用风险（已用数据溯源规则约束）"],
     ], widths=[2.2, 3.4, 3.2, 3.6, 2.6, 2.6], font_size=8)
 
-    _docx_heading(doc, "二、回测验证（2025-04-21 ~ 2026-09-07，338 个交易日）", 12)
+    _meta = _bt_meta()
+    _docx_heading(doc, f"二、回测验证（{_meta.get('range') or '—'}，{_meta.get('days') or '—'} 个交易日）", 12)
     _docx_para(doc, "回测采用离线行情缓存、决策日收盘生成信号、次日开盘成交，与线上逻辑对齐。"
-                    "重要前提：用“今天的财务数据”去回测过去会产生前视偏差——把基本面分数随机打乱后，"
-                    "策略收益从 +52.8% 掉到 +3.5%，说明大部分“超额”来自事后已知的好公司。"
-                    "因此下表以基本面统一为中性分（60分）的无偏对照为准。", align="justify")
+                    "重要前提：" + brief.backtest_bias_line(bt), align="justify")
     order = [("无偏-固定止盈9%/止损8%", "固定止盈+9%/止损-8%"),
              ("无偏-跌破20日线离场", "跌破20日均线离场"),
              ("无偏-高点回撤12%离场", "移动止损：自最高价回撤12%离场"),
              ("等权持有12只", "对照：等权买入持有观察池12只")]
     rows = []
     for key, label in order:
-        m = bt.get(key)
+        m = _bt_by_strategy(key)
         if not m:
             continue
         rows.append([label, m.get("总收益"), m.get("最大回撤"), m.get("夏普"),
@@ -588,9 +577,8 @@ def strategy_docx(cfg, pool):
     if rows:
         _docx_table(doc, ["离场规则", "总收益", "最大回撤", "夏普", "交易笔数", "卖出胜率"],
                     rows, widths=[5.2, 2.2, 2.2, 1.6, 2.2, 2.2], font_size=9)
-        _docx_para(doc, "结论：①固定止盈在震荡市无效（无偏口径下 -2.75%），改为移动止损后收益 +20.76%、"
-                        "最大回撤由 -16.93% 收窄到 -12.54%；②交易越频繁收益越低，费用与择时损耗是主要拖累；"
-                        "③宽基ETF底仓提供基准收益，个股负责超额。", align="justify")
+        _docx_para(doc, "结论：①" + brief.backtest_exit_sentence(bt)
+                        + "②宽基ETF底仓提供基准收益，个股负责超额。", align="justify")
     else:
         _docx_para(doc, "尚未生成回测结果，请运行 python backtest.py。", indent=False)
 
@@ -635,6 +623,7 @@ def ai_xlsx():
 
 # ================================================================ 12 中期路演PPT
 def roadshow_pptx(cfg, pool, acct, prices, total, benchmark_pct=None):
+    import brief
     from pptx import Presentation
     from pptx.util import Inches, Pt as PPt
     prs = Presentation()
@@ -716,14 +705,14 @@ def roadshow_pptx(cfg, pool, acct, prices, total, benchmark_pct=None):
               picture=pool_score_chart(pool))
 
     bt = backtest_blocks()
-    trail = bt.get("无偏-高点回撤12%离场", {})
-    fixed = bt.get("无偏-固定止盈9%/止损8%", {})
+    trail = _bt_by_strategy("无偏-高点回撤12%离场")
+    fixed = _bt_by_strategy("无偏-固定止盈")
     add_slide("5. 策略验证：为什么改成移动止损", [
         "用回测检验策略，而不是凭感觉调参数。",
         f"固定止盈+9%：无偏回测 {fixed.get('总收益', '—')}，最大回撤 {fixed.get('最大回撤', '—')}。",
         f"移动止损（回撤12%）：无偏回测 {trail.get('总收益', '—')}，最大回撤 {trail.get('最大回撤', '—')}。",
         f"交易笔数由 {fixed.get('交易笔数', '—')} 笔降到 {trail.get('交易笔数', '—')} 笔——换手越低、费用损耗越小。",
-        "前视偏差检验：打乱基本面分数后收益由 +52.8% 降至 +3.5%，因此只信无偏对照。",
+        "前视偏差检验：" + brief.backtest_bias_line(bt),
     ])
 
     add_slide("6. 阶段复盘与下一步计划", [
@@ -790,6 +779,7 @@ def review_docx(date, cfg, acct, prices, total):
     doc.save(p)
     return p
 def final_report_docx(cfg, pool, acct, prices, total, decisions, benchmark_pct=None):
+    import brief
     doc = Document()
     _docx_style(doc)
     _docx_heading(doc, "模拟证券投资大赛·投资总结报告", 16)
@@ -851,16 +841,15 @@ def final_report_docx(cfg, pool, acct, prices, total, decisions, benchmark_pct=N
     _docx_heading(doc, "四、策略验证与回测（重要）", 12)
     bt = backtest_blocks()
     _docx_para(doc, "为避免“用今天的财务数据去回测过去”的前视偏差，本团队做了两组检验："
-                    "①把基本面分数随机打乱；②把基本面分数统一为中性60分。"
-                    "前者收益由 +52.8% 降至 +3.5%，说明原始结果中的超额主要来自事后已知的好公司，"
-                    "因此正式结论以中性口径的无偏回测为准。", align="justify")
+                    "①把基本面分数随机打乱；②把基本面分数统一为中性60分。" + brief.backtest_bias_line(bt),
+               align="justify")
     order = [("无偏-固定止盈9%/止损8%", "固定止盈+9%/止损-8%"),
              ("无偏-跌破20日线离场", "跌破20日均线离场"),
              ("无偏-高点回撤12%离场", "移动止损（自最高价回撤12%）"),
              ("等权持有12只", "对照：等权持有观察池12只")]
     rows = []
     for key, label in order:
-        m = bt.get(key)
+        m = _bt_by_strategy(key)
         if m:
             rows.append([label, m.get("总收益"), m.get("最大回撤"), m.get("夏普"), m.get("交易笔数")])
     if rows:
