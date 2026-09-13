@@ -52,7 +52,7 @@ import reports
 import screening
 import validator
 import verify as verify_mod
-from em_client import industry_board_rank, kline, kline_until, live_prices
+from em_client import industry_board_rank, index_turnovers, kline, kline_until, live_prices
 
 CFG = json.load(open(os.path.join(BASE, "config.json"), encoding="utf-8"))
 STATE_PATH = os.path.join(BASE, "data", "pipeline_state.json")
@@ -140,24 +140,63 @@ def market_observe(date):
                 "close": float(df["close"].iloc[-1]),
                 "pct": (df["close"].iloc[-1] / df["close"].iloc[-2] - 1) * 100,
             }
-    sh = kline_until("1.000001", date, is_index=True).tail(6)
-    sz = kline_until("0.399001", date, is_index=True).tail(6)
+    # kline 缓存的 amount 列历史上单位混用：东财源写"元"，腾讯/新浪源写"万元"（量(手)×100×价）。
+    # 读取时按量级统一归一化为"元"：正常单日成交额在 1e12~1e14 元量级，明显 <1e7 的按万元 ×1e4。
+    # 不做这步会出现"两市成交额 8568920 亿元"这种量级事故（2026-09-13 实测踩到）。
+    def _norm_amount(df):
+        if len(df) and "amount" in df.columns:
+            v = df["amount"]
+            mask = v.notna() & (v.abs() < 1e7)
+            df.loc[mask, "amount"] = v[mask] * 1e4
+        return df
+
+    sh = _norm_amount(kline_until("1.000001", date, is_index=True).tail(6).reset_index(drop=True))
+    sz = _norm_amount(kline_until("0.399001", date, is_index=True).tail(6).reset_index(drop=True))
     turnover_scope = "sh+sz"
+    # 备用数据源（腾讯/新浪）的指数日K不带成交额 → 用东财 ulist 的 f6（单位：元）兜底。
+    _flows = {}          # 只在最新一根缺成交额时才去取，避免无谓请求
+    _filled = []
+    for _df, _sid, _nm in ((sh, "1.000001", "上证指数"), (sz, "0.399001", "深证成指")):
+        if len(_df) and _df["amount"].iloc[-1] != _df["amount"].iloc[-1]:
+            if not _flows:
+                _flows = index_turnovers(["1.000001", "0.399001"], date)
+            if _sid in _flows:
+                _df.loc[len(_df) - 1, "amount"] = _flows[_sid]  # 元
+                _filled.append(f"{_nm} {_flows[_sid] / 1e8:.0f} 亿")
+    if _filled:
+        print("[数据兜底] 指数成交额取自东财 ulist：" + "、".join(_filled))
+
+    def _yi(v):
+        """元 → 亿元（NaN 透传）。"""
+        return float(v) / 1e8 if v is not None and v == v else float("nan")
+
+    def _avg5(df):
+        """前 5 日均量（亿元）：跳过缺失的日子，样本不足 3 天就不给对比结论。"""
+        vals = [_yi(x) for x in df["amount"].tail(6).head(5)]
+        vals = [x for x in vals if x == x]
+        return sum(vals) / len(vals) if len(vals) >= 3 else float("nan")
+
     # 必须校验"最后一根"的成交额，而不是任意一根：盘中运行时当日K线未走完，成交额可能是 NaN，
     # 旧写法 notna().any() 会被前几日数据骗过，把 nan 写进"两市成交额"（09-11 实际发生过）。
-    a_sh = sh["amount"].iloc[-1] if len(sh) else float("nan")
-    a_sz = sz["amount"].iloc[-1] if len(sz) else float("nan")
+    a_sh = _yi(sh["amount"].iloc[-1]) if len(sh) else float("nan")
+    a_sz = _yi(sz["amount"].iloc[-1]) if len(sz) else float("nan")
     if a_sh == a_sh and a_sz == a_sz:  # NaN != NaN，用这个特性挡掉 NaN
-        # 两市成交额 = 沪市(上证指数) + 深市(深证成指) 成交额
+        # 两市成交额 = 沪市(上证指数) + 深市(深证成指)
         # 原实现只取上证指数 amount，数值约为真实两市的 45%~50%，口径与"两市"不符
-        turnover = float(a_sh + a_sz) / 1e8  # 亿元
-        avg5 = float(sh["amount"].tail(6).head(5).mean()
-                     + sz["amount"].tail(6).head(5).mean()) / 1e8
+        turnover = a_sh + a_sz
+        avg5 = _avg5(sh) + _avg5(sz)
     elif a_sh == a_sh:  # 深市成交额不可用 → 降级为沪市口径并标注
         turnover_scope = "sh_only"
-        turnover = float(a_sh) / 1e8  # 亿元
-        avg5 = float(sh["amount"].tail(6).head(5).mean()) / 1e8
+        turnover = a_sh
+        avg5 = _avg5(sh)
     else:
+        turnover = avg5 = None
+    # 历史各日成交额常常缺失（备用源）→ 不做量能对比；量级明显不合理时同样按不可用处理。
+    # 合理区间按 A 股实际给足：两市单日 5000 亿~5 万亿（深证成指自身的成交额约 5 万亿）。
+    if avg5 is not None and (avg5 != avg5 or not (1000 <= avg5 <= 200000)):
+        avg5 = None
+    if turnover is not None and not (1000 <= turnover <= 200000):
+        print(f"  [警告] 两市成交额 {turnover:.0f} 亿元超出合理量级，已按不可用处理")
         turnover = avg5 = None
     try:
         boards = industry_board_rank(15)                  # 涨幅榜
@@ -177,10 +216,15 @@ def market_observe(date):
                 f"{'站上' if above_ma20 else '跌破'}20日均线；成交额数据暂不可用（备用数据源口径）。")
     else:
         scope_txt = "两市成交额" if turnover_scope == "sh+sz" else "沪市成交额（深市数据不可用）"
-        view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
-                f"{'站上' if above_ma20 else '跌破'}20日均线；{scope_txt}约{turnover:.0f}亿元，"
-                f"较前5日均量{'放大' if turnover > avg5 else '萎缩'}"
-                f"（前5日均值约{avg5:.0f}亿元），市场{'活跃度提升' if turnover > avg5 else '情绪偏谨慎'}。")
+        if avg5 is None:  # 历史各日成交额缺失（备用源口径）→ 只报绝对量，不做量能对比
+            view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
+                    f"{'站上' if above_ma20 else '跌破'}20日均线；{scope_txt}约{turnover:.0f}亿元"
+                    f"（前5日均量口径暂缺，未做量能对比）。")
+        else:
+            view = (f"沪深300收于{hs300.get('close', 0):.2f}点（{hs300.get('pct', 0):+.2f}%），"
+                    f"{'站上' if above_ma20 else '跌破'}20日均线；{scope_txt}约{turnover:.0f}亿元，"
+                    f"较前5日均量{'放大' if turnover > avg5 else '萎缩'}"
+                    f"（前5日均值约{avg5:.0f}亿元），市场{'活跃度提升' if turnover > avg5 else '情绪偏谨慎'}。")
     lead_names = {b["name"] for b in boards[:5]}
     watch_industries = {u["industry"] for u in CFG["universe"]}
     hit = lead_names & {w for w in watch_industries if len(w) >= 2}
@@ -442,8 +486,42 @@ def run_data(label="数据更新"):
                 main_fin_data(u["secid"])
             except Exception:
                 pass
+    # 成交额口径定标：不同备用源的 volume 单位不同（手 / 股），估出来的 amount 可能整表偏 10~100 倍。
+    # 用东财快照的真实成交额给观察池与指数缓存定标，保证"两市成交额"与个股资金口径可用。
+    from em_client import calibrate_amounts, index_turnovers
+    calibrate_amounts(date, CFG["universe"])
+    _calibrate_index_amounts(date, index_turnovers)
     print(f"[{label}] 行情缓存 {ok}/{len(CFG['universe'])} 只，财务数据已刷新，数据截止 {date}")
     data_staleness_check()
+
+
+def _calibrate_index_amounts(date, index_turnovers):
+    """指数成交额定标：缓存里最新一根与东财 ulist 的 f6 对不上时，整体按比例缩放。"""
+    flows = index_turnovers([i["code"] for i in CFG["indices"]], date)
+    fixed = []
+    for idx in CFG["indices"]:
+        real = flows.get(idx["code"])
+        if not real:
+            continue
+        try:
+            df = kline(idx["code"], is_index=True)
+            row = df[df["date"] == date]
+            if not len(row):
+                continue
+            old = float(row["amount"].iloc[0])
+            if old != old or not old:
+                continue
+            factor = float(real) / old
+            if abs(factor - 1) <= 0.02:
+                continue
+            df["amount"] = df["amount"] * factor
+            df.to_csv(os.path.join(BASE, "data", "kline", f"{idx['code'].replace('.', '_')}.csv"),
+                      index=False)
+            fixed.append(f"{idx['name']}×{factor:.2f}")
+        except Exception:
+            continue
+    if fixed:
+        print("[数据定标] 指数成交额已按东财 ulist 校正：" + "、".join(fixed))
 
 
 def run_market():
