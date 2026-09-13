@@ -10,6 +10,7 @@
 import datetime as dt
 import json
 import os
+import re
 
 import portfolio as pf
 import records
@@ -46,36 +47,102 @@ def _table(headers, rows):
     return "\n".join(lines)
 
 
-def _backtest_summary():
-    """解析 data/backtest_result.txt 里的 JSON 块，提取关键结论。"""
+def backtest_meta():
+    """回测区间与样本天数（从 data/backtest_result.txt 首行解析）。"""
+    path = os.path.join(DATA_DIR, "backtest_result.txt")
+    meta = {"range": "", "days": ""}
+    if not os.path.exists(path):
+        return meta
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.readline().strip()
+    except Exception:
+        return meta
+    m = re.search(r"回测区间[:：]\s*(\S+)\s*~\s*(\S+)\s*\((\d+)\s*个交易日\)", head)
+    if m:
+        meta["range"] = f"{m.group(1)} ~ {m.group(2)}"
+        meta["days"] = m.group(3)
+    return meta
+
+
+def backtest_blocks():
+    """解析 data/backtest_result.txt 全部 === 段落 → {段落名: 指标字典}。
+
+    实现：先按 === 行切段，再在每段里用正则取"完整的顶层 JSON 对象"。
+    不用花括号配平计数——正文里存在形如 "买入笔数={...}" 的行会破坏计数；
+    也不依赖空行分段——缺尾随空行的段落会把下一段 JSON 粘进来（旧实现的真实故障）。
+    """
     path = os.path.join(DATA_DIR, "backtest_result.txt")
     if not os.path.exists(path):
-        return {}, []
-    blocks, title, buf = {}, None, []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if s.startswith("=== ") and s.endswith(" ==="):
-                if title and buf:
-                    blocks[title] = "".join(buf)
-                title, buf = s[4:-4], []
-            elif title is not None:
-                if not s and buf:
-                    blocks[title] = "".join(buf)
-                    title, buf = None, []
-                else:
-                    buf.append(line)
-    if title and buf:
-        blocks[title] = "".join(buf)
+        return {}
+    try:
+        text = open(path, encoding="utf-8", newline="").read()
+    except Exception:
+        return {}
+    text = text.replace("\r\n", "\n").replace("\r", "\n")  # 兼容 Windows 换行（\r 会让行尾锚点失配）
     parsed = {}
-    for k, v in blocks.items():
+    # 注意：标题形如 "=== 对照：…（'选股池本身'的收益）===" —— "===" 前可能没有空格，
+    # 所以分隔符必须写成 \s*=== 而不是 " ==="，否则这类段落会被整段漏掉。
+    parts = re.split(r"^===\s*(.+?)\s*===\s*$", text, flags=re.M)
+    for i in range(1, len(parts) - 1, 2):
+        title, body = parts[i].strip(), parts[i + 1]
+        m = re.search(r"\{.*?\n\}", body, re.S)
+        if not m:
+            continue
         try:
-            parsed[k] = json.loads(v)
+            parsed[title] = json.loads(m.group(0))
         except Exception:
-            pass
-    order = ["线上策略(基本面50%+技术面50%)", "无偏-固定止盈9%/止损8%",
-             "无偏-跌破20日线离场", "无偏-高点回撤12%离场", "等权持有12只"]
-    return parsed, [k for k in order if k in parsed]
+            continue
+    return parsed
+
+
+def _bt_by_strategy(sub, blocks=None):
+    """按 JSON 里的“策略”字段匹配回测口径（标题会随实验增删而变，按字段更稳）。
+
+    先精确相等，再退化到子串匹配，避免 "线上策略" 误命中 "线上策略+5日不回购"。
+    """
+    bt = blocks if blocks is not None else backtest_blocks()
+    for v in bt.values():
+        if str(v.get("策略", "")) == sub:
+            return v
+    for v in bt.values():
+        if sub in str(v.get("策略", "")):
+            return v
+    return {}
+
+
+def backtest_bias_line(blocks=None):
+    """前视偏差检验一句话（收益数字全部取自回测结果，避免文档与数据脱节）。"""
+    online = _bt_by_strategy("线上策略", blocks)
+    neutral = _bt_by_strategy("基本面中性60", blocks)
+    shuffled = _bt_by_strategy("打乱基本面", blocks)
+    return (f"用“今天的财务数据”回测过去会产生前视偏差：打乱基本面分数后收益从 "
+            f"{online.get('总收益', '—')} 掉到 {shuffled.get('总收益', '—')}，"
+            f"而基本面统一为中性60分的口径为 {neutral.get('总收益', '—')}，"
+            f"因此正式结论以中性口径的无偏对照为准。")
+
+
+def backtest_exit_sentence(blocks=None):
+    """离场规则对比一句话（固定止盈 vs 移动止损，数字取自回测结果）。"""
+    fixed = _bt_by_strategy("无偏-固定止盈", blocks)
+    trail = _bt_by_strategy("无偏-高点回撤12%离场", blocks)
+    return (f"固定止盈在震荡市被反复洗出（无偏口径 {fixed.get('总收益', '—')}），"
+            f"改为移动止损（自最高价回撤12%）后收益 {trail.get('总收益', '—')}、"
+            f"最大回撤 {trail.get('最大回撤', '—')}，交易笔数由 {fixed.get('交易笔数', '—')} 笔"
+            f"降到 {trail.get('交易笔数', '—')} 笔——换手越低，费用与择时损耗越小。")
+
+
+def _backtest_summary():
+    """按固定顺序取出关键口径（供素材包表格按序展示）。"""
+    parsed = backtest_blocks()
+    order = ["线上策略", "无偏-固定止盈", "无偏-跌破20日线", "无偏-高点回撤12%离场", "等权持有12只"]
+    picked, seen = {}, set()
+    for sub in order:
+        v = _bt_by_strategy(sub, parsed)
+        if v:
+            picked[sub] = v
+            seen.add(id(v))
+    return picked, list(picked)
 
 
 def _market_rows(days=5):
@@ -222,8 +289,8 @@ def build_report_pack(asof=None, verify_report=None):
     # 六、回测结论
     L.append("## 六、策略回测结论（无偏对照）")
     L.append("")
-    L.append("> 回测区间与口径见 `data/backtest_result.txt`；关键发现：用「今天的财务数据」回测会产生**前视偏差**，"
-             "把基本面分数随机打乱后收益从 +52.8% 掉到 +3.5%，因此下表以**基本面中性（统一60分）**的无偏对照为准。")
+    L.append("> 回测区间与口径见 `data/backtest_result.txt`；关键发现：" + backtest_bias_line(bt)
+             + "下表以**基本面中性（统一60分）**的无偏对照为准。")
     L.append("")
     if bt_order:
         rows = []
@@ -232,9 +299,8 @@ def build_report_pack(asof=None, verify_report=None):
             rows.append([k, m.get("总收益"), m.get("最大回撤"), m.get("夏普"), m.get("交易笔数"), m.get("卖出胜率")])
         L.append(_table(["策略", "总收益", "最大回撤", "夏普", "交易笔数", "卖出胜率"], rows))
         L.append("")
-        L.append("- 结论1：固定止盈+9% 在震荡市中被反复洗出，无偏对照下反而略亏；**改用移动止损（自高点回撤12%）后"
-                 "收益 +20.76%、回撤 -12.54%**。")
-        L.append("- 结论2：交易越频繁收益越低（12笔 > 64笔 > 110笔 > 359笔），费用与择时损耗是主要拖累。")
+        L.append("- 结论1：" + backtest_exit_sentence(bt))
+        L.append("- 结论2：交易越频繁收益越低（对照各口径的交易笔数与收益即可看出），费用与择时损耗是主要拖累。")
         L.append("- 结论3：宽基ETF底仓提供基准收益，个股负责超额，二者缺一不可。")
     else:
         L.append("- 未找到回测结果文件，请先运行 `python backtest.py`。")
