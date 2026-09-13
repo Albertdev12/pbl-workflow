@@ -10,6 +10,7 @@ import requests
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 TENCENT_KLINE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+TENCENT_PROXY_KLINE = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
 TENCENT_QUOTE = "https://qt.gtimg.cn/q="
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 KLINE_DIR = os.path.join(DATA_DIR, "kline")
@@ -23,8 +24,82 @@ def _tencent_symbol(secid):
     return ("sh" if market == "1" else "sz") + code
 
 
+def _tencent_proxy_kline(secid, count=420, is_index=False):
+    """备用数据源（腾讯 proxy 接口）前复权日K。
+
+    与 _tencent_kline 同一套数据，但走的是另一个子域：实测 web.ifzq.gtimg.cn 在
+    单IP高频请求后会返回 501，而 proxy.finance.qq.com 仍然可用（反之亦然），
+    所以两者互为备份，显著降低"全市场批量取K线被限流"的概率。
+    """
+    sym = _tencent_symbol(secid)
+    r = requests.get(TENCENT_PROXY_KLINE,
+                     params={"param": f"{sym},day,,,{count},qfq"}, headers=HEADERS, timeout=12)
+    r.raise_for_status()
+    node = (r.json().get("data") or {}).get(sym) or {}
+    rows = node.get("qfqday") or node.get("day") or []
+    if not rows:
+        raise ValueError("tencent proxy kline empty")
+    df = pd.DataFrame([x[:6] for x in rows],
+                      columns=["date", "open", "close", "high", "low", "volume"])
+    for c in df.columns:
+        if c != "date":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    # 该接口 volume 单位是「股」（不是手），故成交额 ≈ 收盘价 × 股数，不能再 ×100
+    #（早期写成 ×100 会让成交额虚高 100 倍；指数无成交额口径 → 保持 NaN）
+    df["amount"] = float("nan") if is_index else df["volume"] * df["close"]
+    return df[["date", "open", "close", "high", "low", "volume", "amount"]]
+
+
+def calibrate_amounts(date=None, symbols=None, tol=0.02):
+    """用东财快照的真实成交额给本地日K缓存"定标"（修正 amount 的单位/口径偏差）。
+
+    背景：不同备用源的 volume 单位不一样（腾讯主域按「手」、腾讯 proxy 与指数按「股」），
+    早期用固定公式估成交额，会让本地缓存里的 amount 整体偏 10 倍或 100 倍。
+    东财快照的 f48 就是当日真实成交额（元），拿它除以缓存里最新一根的 amount 得到校准系数，
+    再整体缩放（保留各日相对结构，不做等值填充）。
+
+    返回 {code: 系数}；偏差在 tol 以内或数据缺失的标的不动。
+    """
+    out = {}
+    for u in (symbols or _cfg_universe()):
+        path = os.path.join(KLINE_DIR, f"{u['secid'].replace('.', '_')}.csv")
+        if not os.path.exists(path):
+            continue
+        try:
+            df = pd.read_csv(path, dtype={"date": str})
+            row = df[df["date"] == (date or str(df["date"].iloc[-1]))]
+            if not len(row):
+                continue
+            old = float(row["amount"].iloc[0])
+            s = snapshot(u["secid"])
+            amt = s.get("amount")
+            if not old or not amt or old != old:
+                continue
+            factor = float(amt) / old
+            if abs(factor - 1) <= tol:
+                continue
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * factor
+            df.to_csv(path, index=False)
+            out[u["code"]] = round(factor, 4)
+        except Exception as e:
+            print(f"[数据定标] {u['code']} 失败: {str(e)[:60]}")
+    if out:
+        print(f"[数据定标] 已按东财快照修正 {len(out)} 只标的的成交额口径："
+              + "、".join(f"{k}×{v}" for k, v in out.items()))
+    return out
+
+
+def _cfg_universe():
+    """读取 config.json 的观察池。"""
+    try:
+        with open(os.path.join(os.path.dirname(DATA_DIR), "config.json"), encoding="utf-8") as f:
+            return json.load(f).get("universe", [])
+    except Exception:
+        return []
+
+
 def _tencent_kline(secid, count=420, is_index=False):
-    """备用数据源（腾讯）前复权日K。个股成交额按 收盘价×成交量(手)×100 估算；
+    """备用数据源（腾讯主域）前复权日K。个股成交额按 收盘价×成交量(手)×100 估算；
     指数没有可用成交额口径 → 标记 NaN（避免写入错误数字污染"两市成交额"）。"""
     sym = _tencent_symbol(secid)
     r = requests.get(TENCENT_KLINE, params={"param": f"{sym},day,,,{count},qfq"},
@@ -108,6 +183,39 @@ def _get(url, params, timeout=12, retries=3):
     raise last_err
 
 
+# 东财主机降级链：主域被网关拦截时自动切延时域。
+# 实测：push2his（日K）被拦且延时域不支持日K（返回 klines 空）→ 日K仍由腾讯/新浪兜底，故不列入。
+EM_HOSTS = {
+    "quote": ("https://push2.eastmoney.com", "https://push2delay.eastmoney.com"),
+}
+_HOST_OK = {}
+
+
+def _get_em(kind, path, params, timeout=12):
+    """按主机链请求东财同一路径，返回 (json, 命中主机)。失败换下一个主机，全失败抛最后一次异常。
+
+    命中主机缓存在 _HOST_OK 里，后续调用直接使用探测结果；缓存失效时自动回到链首重试。
+    每次尝试都复用 _get 的重试与 fetch_log 采集审计。主机链内单个主机失败不算"东财不可用"
+    （延时域可用时数据依然完整），所以只有整条链都失败才交给调用方决定是否熔断。
+    """
+    hosts = []
+    cached = _HOST_OK.get(kind)
+    if cached:
+        hosts.append(cached)
+    hosts += [h for h in EM_HOSTS[kind] if h != cached]
+    last_err = None
+    for host in hosts:
+        try:
+            j = _get(host + path, params, timeout=timeout)
+            _HOST_OK[kind] = host
+            return j, host
+        except Exception as e:
+            last_err = e
+            if _HOST_OK.get(kind) == host:
+                _HOST_OK.pop(kind, None)  # 缓存主机已失效
+    raise last_err if last_err else RuntimeError(f"东财 {kind} 无可用主机")
+
+
 # ---------------------------------------------------------------- 日K线
 def _sina_kline(secid, count=320):
     """第三数据源（新浪）日K。用于东财与腾讯同时不可用时兜底（实测两源故障时仍稳定可用）。
@@ -126,17 +234,87 @@ def _sina_kline(secid, count=320):
     return df
 
 
+def _sina_kline_alt(secid, count=320):
+    """第四数据源（新浪移动端接口，同样是不复权价）。
+
+    与 _sina_kline 数据一致但走 quotes.sina.cn：实测 money.finance.sina.com.cn 被限流
+    返回 456 时，这个域名仍然可用（两条链路限流策略不同），用于继续降低批量取K线失败率。
+    """
+    sym = ("sh" if secid.split(".")[0] == "1" else "sz") + secid.split(".")[1]
+    r = requests.get("https://quotes.sina.cn/cn/api/json_v2.php/"
+                     f"CN_MarketDataService.getKLineData?symbol={sym}&scale=240&ma=no&datalen={count}",
+                     headers={**HEADERS, "Referer": "https://finance.sina.com.cn"}, timeout=15)
+    r.raise_for_status()
+    data = json.loads(r.text.strip())
+    if not data:
+        raise ValueError("sina alt kline empty")
+    df = pd.DataFrame(data).rename(columns={"day": "date"})
+    df = df[["date", "open", "close", "high", "low", "volume"]]
+    df["amount"] = float("nan")
+    return df
+
+
+def _patch_index_close(df, secid, tol=0.002):
+    """用东财快照校正"备用源最新一根"的指数收盘价。
+
+    背景（2026-09-13 实测）：腾讯前复权日K在指数上给出的 09-11 收盘价整体偏低
+    （沪深300 给 4493.15，而新浪与东财快照都是 4510.155；个股同样偏低 0.2%~1.7%），
+    直接把它当收盘价会污染市场观察与均线/RSI 等技术指标。个股暂不自动改写
+    （复权价与快照价本身有细微口径差），只在报告里做双源交叉校验；
+    指数则用东财快照（点位是无复权的真实值）校正最新一根，并同步平移 open/high/low。
+
+    仅当该根日期等于快照所属交易日、且偏差超过 tol 时才改写；任何异常都不影响主流程。
+    """
+    if df is None or not len(df):
+        return df
+    try:
+        day = str(df["date"].iloc[-1])
+        s = snapshot(secid)
+        px = s.get("price")
+        if not px or px != px:
+            return df
+        rows = df[df["date"] == day]
+        if not len(rows):
+            return df
+        i = rows.index[-1]
+        old = float(df.at[i, "close"])
+        if not old or abs(px - old) / old <= tol:
+            return df
+        adj_close = float(px)
+        if s.get("prev_close"):
+            # 用快照涨跌幅反推真实开盘/最高/最低，保持 OHLC 内部一致
+            pass
+        ratio = adj_close / old
+        for col in ("open", "high", "low"):
+            v = df.at[i, col]
+            if v == v and v:  # 非 NaN
+                df.at[i, col] = round(float(v) * ratio, 4)
+        df.at[i, "close"] = adj_close
+        # 若快照给了当日真实高低，优先采用（避免整体平移带来的误差）
+        for col, fld in (("high", "high"), ("low", "low"), ("open", "open")):
+            v = s.get(fld)
+            if v:
+                df.at[i, col] = float(v)
+        print(f"[数据校正] {secid} 指数收盘价 {old} → {adj_close}"
+              f"（备用源与东财快照偏差 {abs(adj_close - old) / old * 100:.2f}%，已按东财口径校正）")
+    except Exception:
+        pass
+    return df
+
+
 def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=False, cache=True):
     """日K线 -> DataFrame[date, open, close, high, low, volume, amount]。
 
-    数据源顺序：东财(push2his) → 腾讯 → 新浪；全部失败时回退本地CSV缓存。
+    数据源顺序：东财(push2his) → 腾讯主域 → 腾讯proxy → 新浪主域 → 新浪备用域 → 本地CSV缓存。
     cache=False 时不读写本地CSV（供只做一次技术面计算的批量调用，避免候选股每天新增文件）。
+    指数走备用源时会用东财快照校正最新一根的收盘价（见 _patch_index_close）。
     """
     cache_path = os.path.join(KLINE_DIR, f"{secid.replace('.', '_')}.csv")
     url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
     params = dict(secid=secid, fields1="f1,f2,f3,f4,f5,f6",
                   fields2="f51,f52,f53,f54,f55,f56,f57", klt=klt, fqt=fqt, beg=beg, end=end)
     from_fallback = False
+    from_em = False
     df, em_err = None, None
     if em_available("kline"):
         try:
@@ -145,28 +323,36 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
             rows = [x.split(",") for x in d.get("klines", [])]
             df = pd.DataFrame(rows, columns=["date", "open", "close", "high", "low", "volume", "amount"])
             _em_ok("kline")
+            from_em = True
         except Exception as e:
             em_err = e
             _em_fail("kline", e)
     if df is None:
-        try:  # 第二数据源：腾讯（只补缺口，不覆盖东财已有日期）
-            df = _tencent_kline(secid, is_index=is_index)
-            from_fallback = True
-            print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err or '主源已熔断')[:50]}），已切换腾讯数据源")
-        except Exception as tx_err:
-            try:  # 第三数据源：新浪
-                df = _sina_kline(secid)
+        # 备用源依次尝试：腾讯主域 → 腾讯 proxy 子域 → 新浪主域 → 新浪备用域 → 本地缓存
+        for nm, fn in (("腾讯", lambda: _tencent_kline(secid, is_index=is_index)),
+                       ("腾讯proxy", lambda: _tencent_proxy_kline(secid, is_index=is_index)),
+                       ("新浪", lambda: _sina_kline(secid)),
+                       ("新浪备用", lambda: _sina_kline_alt(secid))):
+            try:
+                df = fn()
                 from_fallback = True
-                print(f"[DATA_FALLBACK] 东财+腾讯均失败（{str(tx_err)[:40]}），已切换新浪数据源")
-            except Exception:
-                if cache and os.path.exists(cache_path):  # DATA_STALE回退：使用本地缓存
-                    df = pd.read_csv(cache_path, dtype={"date": str})
-                    print(f"[DATA_STALE] 三数据源均失败，回退本地缓存: {cache_path}")
-                    return df.sort_values("date").reset_index(drop=True)
-                raise
+                print(f"[DATA_FALLBACK] 东财行情失败（{str(em_err or '主源已熔断')[:40]}），"
+                      f"已切换{nm}数据源")
+                break
+            except Exception as e:
+                em_err = em_err or e
+                continue
+        if df is None:
+            if cache and os.path.exists(cache_path):  # DATA_STALE回退：使用本地缓存
+                df = pd.read_csv(cache_path, dtype={"date": str})
+                print(f"[DATA_STALE] 各数据源均失败，回退本地缓存: {cache_path}")
+                return df.sort_values("date").reset_index(drop=True)
+            raise RuntimeError(f"{secid} 日K全部数据源不可用")
     for c in df.columns:
         if c != "date":
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    if is_index and not from_em:
+        _patch_index_close(df, secid)
     if not cache:
         return df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
     # 增量合并缓存
@@ -181,6 +367,10 @@ def kline(secid, beg="20250101", end="20500101", klt="101", fqt="1", is_index=Fa
             amt_map = old.set_index("date")["amount"]
             df["amount"] = df["amount"].fillna(df["date"].map(amt_map))
     df = df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
+    # 校正必须在合并缓存之后做：旧缓存里同样存着备用源的错误收盘价，
+    # 否则"旧记录优先"的合并会把刚校正好的最新一根又覆盖回去。
+    if is_index and not from_em:
+        df = _patch_index_close(df, secid)
     df.to_csv(cache_path, index=False)
     return df
 
@@ -192,16 +382,54 @@ def kline_until(secid, trade_date, lookback=260, is_index=False):
     return df.tail(lookback).reset_index(drop=True)
 
 
+# ---------------------------------------------------------------- 指数成交额兜底
+# 腾讯/新浪的指数日K没有成交额字段（东财 push2his 无可用时 amount 会是 NaN），
+# 导致"两市成交额"被迫写成"数据暂不可用"。东财 ulist 接口的 f6 就是指数成交额
+# （实测 上证+深证 ≈ 全市场个股成交额合计），这里按交易日缓存后供 market_observe 兜底。
+IDX_FLOW_CACHE = os.path.join(DATA_DIR, "index_turnover.json")
+
+
+def index_turnovers(secids, date):
+    """返回 {secid: 成交额(元)}；按 date 缓存，只含本次请求到的指数。"""
+    cache = {}
+    if os.path.exists(IDX_FLOW_CACHE):
+        try:
+            obj = json.load(open(IDX_FLOW_CACHE, encoding="utf-8"))
+            if obj.get("date") == date:
+                cache = obj.get("rows") or {}
+        except Exception:
+            cache = {}
+    miss = [s for s in secids if s not in cache]
+    if miss:
+        try:
+            j, _host = _get_em("quote", "/api/qt/ulist.np/get",
+                               dict(secids=",".join(miss), fields="f6,f12", fltt=2, invt=2))
+            for d in ((j.get("data") or {}).get("diff") or []):
+                code = str(d.get("f12") or "")
+                secid = next((s for s in miss if s.split(".")[1] == code), None)
+                if secid and isinstance(d.get("f6"), (int, float)):
+                    cache[secid] = float(d["f6"])
+            if cache:
+                with open(IDX_FLOW_CACHE, "w", encoding="utf-8") as f:
+                    json.dump({"date": date, "rows": cache}, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[DATA_FALLBACK] 指数成交额兜底失败（{str(e)[:50]}）")
+    return cache
+
+
 # ---------------------------------------------------------------- 实时快照
 def snapshot(secid):
-    """个股/ETF实时快照：名称、现价、涨跌幅、PE、PB、总市值、换手率、量比等。"""
-    url = "http://push2.eastmoney.com/api/qt/stock/get"
+    """个股/ETF实时快照：名称、现价、涨跌幅、PE、PB、总市值、换手率、量比等。
+
+    走 EM_HOSTS["quote"] 主机链（push2 → push2delay）：部分网络环境只拦主域，
+    原先写死单主机时 PE/PB/市值会整批丢失，只能退到不含估值字段的腾讯快照。
+    """
     params = dict(secid=secid, invt="2", fltt="2",
                   fields="f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f62,f84,f116,f117,f162,f164,f167,f168,f169,f170,f171,f292")
     j, em_err = None, None
     if em_available("quote"):
         try:
-            j = _get(url, params)
+            j, _host = _get_em("quote", "/api/qt/stock/get", params)
             _em_ok("quote")
         except Exception as e:
             em_err = e
@@ -210,6 +438,9 @@ def snapshot(secid):
         print(f"[DATA_FALLBACK] 东财快照失败（{str(em_err or '主源已熔断')[:50]}），已切换腾讯数据源")
         return _tencent_snapshot(secid)
     d = j.get("data") or {}
+    if not d.get("f43"):  # 东财返回空壳（延时域对部分标的不支持）→ 同样退腾讯
+        print("[DATA_FALLBACK] 东财快照无行情字段，已切换腾讯数据源")
+        return _tencent_snapshot(secid)
     out = {
         "code": d.get("f57"), "name": d.get("f58"),
         "price": d.get("f43"), "pct_chg": d.get("f170"),
@@ -218,6 +449,7 @@ def snapshot(secid):
         "turnover_pct": d.get("f168"), "volume_ratio": d.get("f50"),
         "high": d.get("f44"), "low": d.get("f45"),
         "open": d.get("f46"), "prev_close": d.get("f60"),
+        "amount": d.get("f48"),   # 当日成交额（元），供成交额口径定标使用
     }
     return out
 
@@ -225,8 +457,10 @@ def snapshot(secid):
 # ---------------------------------------------------------------- 板块/全市场列表源
 # 云端 GitHub Actions 走 http 主源稳定；部分本机网络会拦截明文 http。
 # 首次调用探测一次并缓存，之后全部请求复用同一主机。
-CLIST_HOSTS = ("http://push2.eastmoney.com",
-               "https://push2delay.eastmoney.com",
+# 顺序：延时域优先——主域被网关拦截时首位会让每次探测白等一个超时；
+# 延时域不可用的环境下同样会退回主域，云端行为不变。
+CLIST_HOSTS = ("https://push2delay.eastmoney.com",
+               "http://push2.eastmoney.com",
                "https://push2.eastmoney.com")
 _CLIST_BASE = None
 
