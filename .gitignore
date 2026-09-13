@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 run.log
+.venv-wsl/
+data/picks_kline/
+data/_api_push_cache.json
