@@ -82,6 +82,9 @@
   <h2>AI 智能推荐（DeepSeek Flash）</h2>
   <div class="card" id="aiBox"><div class="muted">加载中…</div></div>
 
+  <h2>明日买入建议（全市场筛选）</h2>
+  <div class="card" id="picksBox"><div class="muted">加载中…</div></div>
+
   <h2>账户总览</h2>
   <div class="card"><div class="grid" id="kpis"><div class="muted">加载中…</div></div></div>
 
@@ -204,7 +207,7 @@ async function loadData(){
   const rd=n=>jgetAt(src,n).catch(()=>null);
   const r=await Promise.all([Promise.resolve(s),rd("nav.json"),rd("decisions.json"),
     rd("pool.json"),rd("market.json"),rd("benchmark.json"),rd("todo.json"),
-    rd("verify.json"),rd("ai.json"),rd("holdings.json")]);
+    rd("verify.json"),rd("ai.json"),rd("holdings.json"),rd("picks.json")]);
   render(r);
   setStatus("加载成功（"+src+(src!==b?" · 已自动选用较新的数据源":"")+"）");
 }
@@ -245,6 +248,82 @@ function renderAI(ai){
     +' · 候选 '+esc(dq["候选数"]||0)+' 只'
     +((dq["剔除数据可疑"]||0)?' · 剔除数据可疑 '+esc(dq["剔除数据可疑"])+' 只':'')
     +' · AI 结论仅供参考，请自行判断并承担风险</div>';
+  box.innerHTML=h;
+}
+
+function renderPicks(pk){
+  const box=$("picksBox"); if(!box) return;
+  if(!pk||!pk.picks||!pk.picks.length){
+    box.innerHTML='<div class="muted">暂无数据。该面板由 <b>scripts/make_picks.py</b> 全市场筛选生成，'
+      +'收盘全流程（16:00 eod）会自动刷新；也可在电脑上手动运行 '
+      +'<span class="tag">python scripts/make_picks.py</span> 后重新推送。</div>';
+    return;
+  }
+  const bw=pk.breadth||{}, tot=(bw.up||0)+(bw.down||0)+(bw.flat||0)||1;
+  let h='<div class="sub">面向 <b>'+esc(pk.target)+'</b> 的建议 · 数据基准 '+esc(pk.date)
+    +' 收盘 · 生成于 '+esc(pk.generated_at)+'</div>';
+  // 市场环境
+  h+='<div style="margin:8px 0;line-height:1.6">';
+  if((pk.indices||[]).length){
+    h+=(pk.indices||[]).map(i=>esc(i.name)+' <b class="'+cls(i.pct)+'">'+sign(i.pct)+'%</b>').join('　')+'<br>';
+  }
+  h+='全市场成交额 '+(pk.turnover_yi==null?'—':fmt(pk.turnover_yi))+' 亿元 · 上涨 '+(bw.up||0)
+    +' / 下跌 '+(bw.down||0)+'（上涨占比 '+(bw.up/tot*100).toFixed(1)+'%）· 涨停 '+(bw.limit_up||0)
+    +' 跌停 '+(bw.limit_dn||0)+'</div>';
+  // 建议表
+  h+='<table><tr><th>优先级</th><th>证券</th><th>收盘</th><th>买入区间</th><th>止损</th>'
+    +'<th>目标</th><th>盈亏比</th><th>PE</th></tr>';
+  (pk.picks||[]).forEach((p,i)=>{
+    const star=i<3?'★核心':(i<5?'○价值':'○分散');
+    h+='<tr><td>'+star+(i+1)+'</td>'
+      +'<td><b>'+esc(p.name)+'</b><br><span class="tag">'+esc(p.code)+' '+esc(p.industry||"")+'</span></td>'
+      +'<td>'+esc(p.price)+'</td><td>'+esc(p.entry_low)+'~'+esc(p.entry_high)+'</td>'
+      +'<td class="dn">'+esc(p.stop)+'</td><td class="up">'+esc(p.target)+'</td>'
+      +'<td>'+esc(p.rr)+'</td><td>'+esc(p.pe==null?"—":p.pe)+'</td></tr>'
+      +'<tr><td colspan="8" class="muted" style="padding-top:0">'
+      +'技术面：20日 '+sign(p.chg20)+'% · RSI '+esc(p.rsi14)+' · 距60日高 '+esc(p.dd60)+'% · '
+      +(p.bull?'均线多头':'均线未多头')+'<br>'
+      +'资金/估值：成交额 '+esc(p.amount_yi)+' 亿 · 换手 '+esc(p.turnover)+'% · 主力净额占比 '
+      +sign((p.mf_ratio||0)*100)+'% · 净利同比 '+esc(p.np_yoy==null?"—":p.np_yoy+"%")
+      +(p.ai_action?'<br>🤖 AI 复核：<b>'+esc(p.ai_action)+'</b> '+esc(p.ai_reason||""):'')
+      +'</td></tr>';
+  });
+  h+='</table>';
+  h+='<div class="muted" style="margin-top:6px">仓位：单只≤15%、合计≤60%，留 40% 现金；'
+    +'高开 >2% 不追，回落到买入区间再买。点位为 ATR 与价格钳制算出的参考值，不构成收益承诺。</div>';
+  // 行业资金
+  if((pk.flows_in||[]).length||(pk.flows_out||[]).length){
+    h+='<div class="sub" style="margin-top:10px;border-top:1px solid #2a3242;padding-top:8px">'
+      +'行业主力净流入：'+(pk.flows_in||[]).map(x=>esc(x.name)+' <span class="up">+'+x.yi+'亿</span>').join('　')
+      +'<br>行业主力净流出：'+(pk.flows_out||[]).map(x=>esc(x.name)+' <span class="dn">'+x.yi+'亿</span>').join('　')
+      +'</div>';
+  }
+  // 筛选漏斗
+  if((pk.funnel||[]).length){
+    h+='<details style="margin-top:8px"><summary class="muted">筛选流程（可复现）</summary><div class="muted" '
+      +'style="margin-top:6px;line-height:1.7">'
+      +pk.funnel.map(f=>esc(f.stage)+'：<b>'+f.count+'</b>').join('<br>')+'</div></details>';
+  }
+  // 观察名单
+  if((pk.watch||[]).length){
+    h+='<details style="margin-top:6px"><summary class="muted">观察名单（未进前 '+esc(pk.top)+'）</summary>'
+      +'<table style="margin-top:6px"><tr><th>代码</th><th>名称</th><th>行业</th><th>收盘</th><th>PE</th>'
+      +'<th>RSI</th><th>距60日高</th></tr>'
+      +pk.watch.map(w=>'<tr><td>'+esc(w.code)+'</td><td>'+esc(w.name)+'</td><td>'+esc(w.industry)
+        +'</td><td>'+esc(w.price)+'</td><td>'+esc(w.pe==null?"—":w.pe)+'</td><td>'+esc(w.rsi14)
+        +'</td><td>'+esc(w.dd60)+'%</td></tr>').join('')+'</table></details>';
+  }
+  if(pk.ai&&pk.ai.market_view){
+    h+='<div class="sub" style="margin-top:8px;border-top:1px solid #2a3242;padding-top:8px">🤖 AI 市场解读：'
+      +esc(pk.ai.market_view)+((pk.ai.risk_level)?'（风险等级 <b>'+esc(pk.ai.risk_level)+'</b>）':'')+'</div>';
+  }
+  if(pk.dev_stats){
+    h+='<div class="muted" style="margin-top:8px;border-top:1px solid #2a3242;padding-top:6px">'
+      +'数据源：'+esc(pk.benchmark||"")+' · 双源价差中位数 '+esc(pk.dev_stats.median_pct)
+      +'%、最大 '+esc(pk.dev_stats.max_pct)+'%（超 0.5% 已剔除 '+esc(pk.dev_stats.over_half_pct)
+      +'/'+esc(pk.dev_stats.n)+' 只）· 全市场 '+esc((pk.funnel&&pk.funnel[0]&&pk.funnel[0].count)||"—")
+      +' 只参与筛选 · 仅供参考，请自行判断</div>';
+  }
   box.innerHTML=h;
 }
 
@@ -296,7 +375,7 @@ function renderAdvice(adv){
   box.innerHTML=h;
 }
 
-function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai,adv]){
+function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai,adv,picks]){
   if(s.err){$("asOf").innerHTML='<span class="err">数据加载失败：'+s.err+'<br>请检查数据地址是否正确、仓库是否存在</span>';return;}
   $("asOf").textContent="数据截止 "+s.as_of+" · 云端更新于 "+s.updated_at+(s.data_stale?" · ⚠ 行情源故障，数据未更新到最新":"");
                 if(s.data_stale){ $("asOf").style.color="#c0392b"; }
@@ -325,6 +404,8 @@ function render([s,nav,decs,pool,mkt,bench,todos,vfy,ai,adv]){
   renderTodos(todos||[]);
   // AI 智能推荐
   renderAI(ai);
+  // 明日买入建议（全市场筛选）
+  renderPicks(picks);
   // 持仓操作建议
   renderAdvice(adv);
   // 净值图（组合 vs 沪深300）
