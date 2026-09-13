@@ -29,11 +29,13 @@ API = "https://api.github.com"
 
 
 def sh(*args):
-    return subprocess.run(args, cwd=BASE, capture_output=True, text=True, check=True).stdout.strip()
+    # core.quotepath=false：否则中文路径会被转义成 \345\256\... 导致 API 404
+    return subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=BASE,
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def repo_slug():
-    url = sh("git", "remote", "get-url", "origin")
+    url = sh("remote", "get-url", "origin")
     slug = url.rstrip("/").split(":")[-1] if url.startswith("git@") else url.rstrip("/").split("github.com/")[-1]
     return slug[:-4] if slug.endswith(".git") else slug
 
@@ -63,11 +65,12 @@ def call(method, path, tok, payload=None, tries=3, timeout=90):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read().decode("utf-8", "replace")
-                return json.loads(body) if body.strip() else {}
+                return r.status, (json.loads(body) if body.strip() else {})
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:300]
+            # 401/403/404 多数是"权限不足"或"路径不存在"，由调用方按状态码决策，不在底层直接退出
             if e.code in (401, 403, 404):
-                raise SystemExit(f"HTTP {e.code} {path}: {detail}")
+                return e.code, {"message": detail}
             if i == tries - 1:
                 raise
             time.sleep(2 * (i + 1))
@@ -75,7 +78,7 @@ def call(method, path, tok, payload=None, tries=3, timeout=90):
             if i == tries - 1:
                 raise
             time.sleep(2 * (i + 1))
-    return {}
+    return 0, {}
 
 
 def push_via_contents(slug, tok, remote_sha, local_sha, changed, apply, cache_path):
@@ -84,12 +87,11 @@ def push_via_contents(slug, tok, remote_sha, local_sha, changed, apply, cache_pa
     每写一个文件就是一次提交（GitHub 只给"单文件提交"这一个写入口），因此会产生多个提交；
     对账本/成果这类小文件完全够用，且不会丢内容。已存在的路径必须带 sha，新路径不能带 sha。
     """
-    remote_files = call("GET", f"/repos/{slug}/contents?ref=main", tok)
     # 递归收集远端文件 sha（Contents API 不递归，这里按需查询单个文件）
     ok, fail, skip = 0, [], 0
     for i, path in enumerate(changed, 1):
         try:
-            blob = sh("git", "rev-parse", f"{local_sha}:{path}")
+            blob = sh("rev-parse", f"{local_sha}:{path}")
         except subprocess.CalledProcessError:
             # 本地删除 → 远端也删
             st, cur = call("GET", f"/repos/{slug}/contents/{urllib.parse.quote(path)}?ref=main", tok)
@@ -146,22 +148,26 @@ def main():
     print(f"[api-push] 仓库 {slug}，分支 {args.branch}")
 
     # 远端最新提交
-    ref = call("GET", f"/repos/{slug}/git/ref/heads/{args.branch}", tok)
+    st, ref = call("GET", f"/repos/{slug}/git/ref/heads/{args.branch}", tok)
+    if st != 200:
+        raise SystemExit(f"读取远端分支失败：HTTP {st} {ref}")
     remote_sha = ref["object"]["sha"]
-    rcommit = call("GET", f"/repos/{slug}/git/commits/{remote_sha}", tok)
+    st, rcommit = call("GET", f"/repos/{slug}/git/commits/{remote_sha}", tok)
+    if st != 200:
+        raise SystemExit(f"读取远端提交失败：HTTP {st} {rcommit}")
     base_tree = rcommit["tree"]["sha"]
     print(f"[api-push] 远端 {args.branch} = {remote_sha[:8]}")
 
-    local_sha = sh("git", "rev-parse", "HEAD")
-    if sh("git", "merge-base", "--is-ancestor", remote_sha, local_sha) is not None:
-        pass
+    local_sha = sh("rev-parse", "HEAD")
     r = subprocess.run(["git", "merge-base", "--is-ancestor", remote_sha, local_sha], cwd=BASE)
     if r.returncode != 0:
         raise SystemExit(f"远端 {remote_sha[:8]} 不是本地 HEAD {local_sha[:8]} 的祖先——"
                          "请先 rebase 到 origin/main（git rebase origin/main）再推送")
 
     # 远端 tree（递归）
-    rtree = call("GET", f"/repos/{slug}/git/trees/{base_tree}?recursive=1", tok)
+    st, rtree = call("GET", f"/repos/{slug}/git/trees/{base_tree}?recursive=1", tok)
+    if st != 200:
+        raise SystemExit(f"读取远端 tree 失败：HTTP {st} {rtree}")
     remote_blobs = {e["path"]: e["sha"] for e in rtree.get("tree", []) if e["type"] == "blob"}
     print(f"[api-push] 远端 tree 含 {len(remote_blobs)} 个文件")
 
@@ -176,13 +182,22 @@ def main():
             uploaded = {}
 
     # 本地相对远端有差异的文件（用本地 object id 与远端 blob sha 直接比对）
-    changed = sh("git", "diff", "--name-only", remote_sha, local_sha).splitlines()
+    changed = sh("diff", "--name-only", remote_sha, local_sha).splitlines()
     print(f"[api-push] 需要上传/更新的文件：{len(changed)} 个")
+
+    # 明确指定走 Contents 通道时不必再建 blob（那一步只是为了拼 tree）
+    if args.via == "contents":
+        print("[api-push] 使用逐文件 Contents API 通道")
+        if not args.apply:
+            print("[api-push] 干跑结束（未做任何改动）。加 --apply 执行提交。")
+            return
+        push_via_contents(slug, tok, remote_sha, local_sha, changed, args.apply, uploaded)
+        return
 
     entries, created, reused, failed, skipped = [], 0, 0, [], 0
     for path in changed:
         try:
-            local_blob = sh("git", "rev-parse", f"{local_sha}:{path}")
+            local_blob = sh("rev-parse", f"{local_sha}:{path}")
         except subprocess.CalledProcessError:
             continue  # 本地没有 = 删除
         if remote_blobs.get(path) == local_blob:
@@ -199,9 +214,11 @@ def main():
             created += 1
             continue
         try:
-            res = call("POST", f"/repos/{slug}/git/blobs", tok,
-                       {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
-                       timeout=180)
+            st_b, res = call("POST", f"/repos/{slug}/git/blobs", tok,
+                             {"content": base64.b64encode(raw).decode(), "encoding": "base64"},
+                             timeout=180)
+            if st_b not in (200, 201):
+                raise RuntimeError(f"HTTP {st_b} {str(res)[:80]}")
             entries.append({"path": path, "mode": "100644", "type": "blob", "sha": res["sha"]})
             uploaded[path] = local_blob
             try:
@@ -225,18 +242,26 @@ def main():
         return
 
     try:
-        tree = call("POST", f"/repos/{slug}/git/trees", tok,
-                    {"base_tree": base_tree, "tree": entries}, timeout=180)
+        st_t, tree = call("POST", f"/repos/{slug}/git/trees", tok,
+                          {"base_tree": base_tree, "tree": entries}, timeout=180)
+        if st_t not in (200, 201):
+            print(f"[api-push] 创建 tree 失败：HTTP {st_t} {str(tree)[:90]}")
+            raise SystemExit("tree-failed")
     except SystemExit as e:
         if args.via == "contents":
             raise
         print(f"[api-push] 创建 tree 被拒（{str(e)[:90]}）→ 改用逐文件 Contents API 推送")
         push_via_contents(slug, tok, remote_sha, local_sha, changed, args.apply, uploaded)
         return
-    msg = sh("git", "log", "-1", "--pretty=%B")
-    commit = call("POST", f"/repos/{slug}/git/commits", tok,
-                  {"message": msg, "tree": tree["sha"], "parents": [remote_sha]}, timeout=120)
-    call("PATCH", f"/repos/{slug}/git/refs/heads/{args.branch}", tok, {"sha": commit["sha"]})
+    msg = sh("log", "-1", "--pretty=%B")
+    st_c, commit = call("POST", f"/repos/{slug}/git/commits", tok,
+                        {"message": msg, "tree": tree["sha"], "parents": [remote_sha]}, timeout=120)
+    if st_c not in (200, 201):
+        raise SystemExit(f"创建提交失败：HTTP {st_c} {str(commit)[:120]}")
+    st_r, res_ref = call("PATCH", f"/repos/{slug}/git/refs/heads/{args.branch}", tok,
+                         {"sha": commit["sha"]})
+    if st_r != 200:
+        raise SystemExit(f"更新分支失败：HTTP {st_r} {str(res_ref)[:120]}")
     print(f"[api-push] 已推送：{remote_sha[:8]} → {commit['sha'][:8]}")
     print("[api-push] 本地分支指针已与远端一致（如需可执行 git fetch 更新 origin/main）")
 
