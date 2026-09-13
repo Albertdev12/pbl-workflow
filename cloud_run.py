@@ -255,6 +255,18 @@ def export_dashboard():
     _jdump("pool.json", summary["pool_top"])
     _jdump("market.json", summary["market"])
     _jdump("alerts.json", alerts)
+    # 全市场《明日买入建议》：由 scripts/make_picks.py 生成，这里只做"搬运"，
+    # 保证仪表盘与报告读的是同一份数据（缺失时页面自行降级，不会报错）。
+    try:
+        import shutil
+        src_picks = os.path.join(BASE, "outputs", "21_买入建议_仪表盘数据.json")
+        if os.path.exists(src_picks):
+            shutil.copyfile(src_picks, os.path.join(DASH, "picks.json"))
+            print("[仪表盘] 已同步《明日买入建议》picks.json")
+        else:
+            print("[仪表盘] 暂无 21_买入建议_仪表盘数据.json（跑一次 scripts/make_picks.py 即可生成）")
+    except Exception as e:
+        print("[仪表盘] 同步买入建议失败（不影响其他面板）:", str(e)[:80])
     print(f"[仪表盘] 已导出 {len(os.listdir(DASH))} 个JSON到 data/dashboard/（数据截止 {date}，"
           f"总资产 {total/10000:.2f}万）")
 
@@ -304,13 +316,40 @@ TASKS = {
 }
 
 
+def refresh_picks():
+    """生成全市场《明日买入建议》数据（仪表盘 picks.json 的上游）。
+
+    全市场筛选要取 ~120 只日K，比主流水线慢，所以只在收盘全流程（eod/report）里跑一次；
+    任何异常都隔离在此，绝不影响账本与成果文档。
+    """
+    script = os.path.join(BASE, "scripts", "make_picks.py")
+    if not os.path.exists(script):
+        print("[选股] 未找到 scripts/make_picks.py，跳过")
+        return False
+    try:
+        r = subprocess.run([sys.executable, script], cwd=BASE,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1800)
+        tail = [l for l in (r.stdout or "").splitlines() if "[选股]" in l][-4:]
+        for l in tail:
+            print(l)
+        if r.returncode != 0:
+            print(f"[选股] 生成失败（exit {r.returncode}），买入建议面板将沿用上一次数据")
+        return r.returncode == 0
+    except Exception as e:
+        print("[选股] 生成异常（已隔离）:", str(e)[:120])
+        return False
+
+
 def main():
     task = sys.argv[1] if len(sys.argv) > 1 else "eod"
     if task not in TASKS:
         print(__doc__)
         return
+    with_picks = "--with-picks" in sys.argv
     print(f"==== cloud_run: {task} @ {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====")
     TASKS[task]()
+    if with_picks:
+        refresh_picks()
     export_dashboard()
     git_commit_push(task)
     print(f"==== cloud_run 完成: {task} ====")
