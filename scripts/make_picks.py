@@ -451,9 +451,43 @@ def render(date, target, funnel, cands, ctx, flows, ai, top, stats=None):
     L.append("---")
     L.append("")
 
+    # ---------- AI 实际推荐的名单（与上面"按预筛分取前 N"是两套排序，必须并列讲清楚）
+    if ai and ai.get("picks"):
+        by_code = {c["code"]: c for c in cands}
+        L.append(f"## 五、AI（DeepSeek）实际推荐的名单　·　{ai.get('date')} {ai.get('session')}")
+        L.append("")
+        L.append("> 上面第一章的名单是**程序按预筛分（动量+资金+盈利质量+估值）排序取前 N**，"
+                 "下面是 **AI 在全部 60 只候选里自己挑的**。两者排序口径不同，名单可以不一样——"
+                 "两只榜单都出现在候选池里，不存在「谁覆盖谁」。")
+        L.append("")
+        L.append("| 代码 | 名称 | AI操作 | 在本报告候选中的预筛排名 | 收盘 | AI买入区间 | 止损 | 目标 | 盈亏比 | AI建议仓位 |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|")
+        rank = {c["code"]: i for i, c in enumerate(cands, 1)}
+        for p in ai["picks"]:
+            code = str(p.get("code")).zfill(6)
+            c = by_code.get(code)
+            rk = f"第 {rank[code]}" if c else "未进 60 只候选"
+            px = c["price"] if c else p.get("ref_close")
+            L.append(f"| {code} | {p.get('name')} | **{p.get('action')}** | {rk} | {px} "
+                     f"| {p.get('entry_low')}~{p.get('entry_high')} | {p.get('stop')} "
+                     f"| {p.get('target')} | {p.get('rr')} | {p.get('position_pct')}% |")
+        L.append("")
+        for p in ai["picks"]:
+            L.append(f"- **{p.get('name')}（{p.get('code')}）· {p.get('action')}**："
+                     f"{p.get('reason', '')}　风险：{p.get('risk', '')}")
+        L.append("")
+        both = [c for c in picks if c["code"] in {str(x.get("code")).zfill(6) for x in ai["picks"]}]
+        L.append(f"> 两份名单重合 {len(both)} 只"
+                 + (f"：{'、'.join(c['name'] for c in both)}" if both else
+                    "（**完全不重合**：程序偏好趋势温和+资金流入的标的，AI 另有一组偏好，"
+                    "执行时请二选一或按仓位上限各取少量，不要两份都买）"))
+        L.append("")
+        L.append("---")
+        L.append("")
+
     # ---------- AI 市场解读
     if ai:
-        L.append("## 五、AI 市场解读（DeepSeek，仅供参考）")
+        L.append("## 六、AI 市场解读（DeepSeek，仅供参考）")
         L.append("")
         L.append(f"- **市场解读**：{ai.get('market_view', '')}")
         L.append(f"- **风险等级**：{ai.get('risk_level', '—')}")
@@ -468,7 +502,7 @@ def render(date, target, funnel, cands, ctx, flows, ai, top, stats=None):
         L.append("")
 
     # ---------- 风险提示
-    L.append("## 六、风险提示与数据说明")
+    L.append("## 七、风险提示与数据说明")
     L.append("")
     L.append("- 本文档由程序按既定规则生成，**买入区间/止损/目标/盈亏比均为 ATR 与价格钳制算出的参考值**，"
              "不构成收益承诺；请结合自身判断与同花顺模拟盘实际成交价执行。")
