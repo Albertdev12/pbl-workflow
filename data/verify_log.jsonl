@@ -50,7 +50,7 @@
 {"n_decisions": 15, "n_verified": 6, "n_pending": 9, "n_samples": 6, "win_rate": 0.0, "avg_excess": -0.0215, "asof": "2026-09-15", "time": "2026-09-15 21:23:54"}
 {"n_decisions": 15, "n_verified": 6, "n_pending": 9, "n_samples": 6, "win_rate": 0.0, "avg_excess": -0.0215, "asof": "2026-09-15", "time": "2026-09-15 21:44:24"}
 {"n_decisions": 16, "n_verified": 8, "n_pending": 8, "n_samples": 8, "win_rate": 0.25, "avg_excess": -0.0071, "asof": "2026-09-16", "time": "2026-09-16 21:21:34"}
-{"n_decisions": 16, "n_verified": 8, "n_pending": 8, "n_samples": 8, "win_rate": 0.25, "avg_excess": -0.0071, "asof": "2026-09-16", "time": "2026-09-16 21:37:33"}
-{"n_decisions": 16, "n_verified": 13, "n_pending": 3, "n_samples": 13, "win_rate": 0.3077, "avg_excess": -0.0104, "asof": "2026-09-17", "time": "2026-09-17 13:30:27"}
-{"n_decisions": 16, "n_verified": 13, "n_pending": 3, "n_samples": 13, "win_rate": 0.3077, "avg_excess": -0.0096, "asof": "2026-09-17", "time": "2026-09-17 18:42:12"}
-{"n_decisions": 16, "n_verified": 13, "n_pending": 3, "n_samples": 13, "win_rate": 0.3077, "avg_excess": -0.0096, "asof": "2026-09-17", "time": "2026-09-17 19:57:33"}
+{"n_decisions": 16, "n_verified": 8, "n_pending": 8, "n_samples": 8, "win_rate": 0.25, "avg_excess": -0.0071, "asof": "2026-09-16", "time": "2026-09-16 21:28:58"}
+{"n_decisions": 16, "n_verified": 8, "n_pending": 8, "n_samples": 8, "win_rate": 0.25, "avg_excess": -0.0071, "asof": "2026-09-16", "time": "2026-09-16 21:33:37"}
+{"n_decisions": 19, "n_verified": 13, "n_pending": 6, "n_samples": 13, "win_rate": 0.3077, "avg_excess": -0.0096, "asof": "2026-09-17", "time": "2026-09-17 20:19:11"}
+{"n_decisions": 19, "n_verified": 13, "n_pending": 6, "n_samples": 13, "win_rate": 0.3077, "avg_excess": -0.0096, "asof": "2026-09-17", "time": "2026-09-17 20:21:36"}
