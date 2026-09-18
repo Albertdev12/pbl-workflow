@@ -1,11 +1,10 @@
 {
-  "timestamp": "2026-09-18 21:08:34",
-  "completion": 89,
+  "timestamp": "2026-09-18 21:11:22",
+  "completion": 94,
   "total_checks": 18,
-  "passed": 16,
+  "passed": 17,
   "missing": [
-    "决策是否全部通过交易前规则校验",
-    "人工判断是否已确认（confirmations.csv）"
+    "决策是否全部通过交易前规则校验"
   ],
   "ready_for_submission": false,
   "detail": [
@@ -51,7 +50,7 @@
     },
     {
       "check": "人工判断是否已确认（confirmations.csv）",
-      "ok": false
+      "ok": true
     },
     {
       "check": "是否生成交易日志与盈亏归因",
