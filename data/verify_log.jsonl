@@ -88,3 +88,4 @@
 {"n_decisions": 20, "n_verified": 19, "n_pending": 1, "n_samples": 32, "win_rate": 0.4375, "avg_excess": -0.0078, "asof": "2026-09-24", "time": "2026-09-26 15:57:45"}
 {"n_decisions": 20, "n_verified": 20, "n_pending": 0, "n_samples": 34, "win_rate": 0.4412, "avg_excess": -0.0072, "asof": "2026-09-28", "time": "2026-09-28 13:57:40"}
 {"n_decisions": 21, "n_verified": 20, "n_pending": 1, "n_samples": 34, "win_rate": 0.4412, "avg_excess": -0.0072, "asof": "2026-09-28", "time": "2026-09-28 20:25:59"}
+{"n_decisions": 21, "n_verified": 20, "n_pending": 1, "n_samples": 34, "win_rate": 0.4412, "avg_excess": -0.0072, "asof": "2026-09-28", "time": "2026-09-28 22:18:26"}
