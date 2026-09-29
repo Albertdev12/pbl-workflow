@@ -92,3 +92,4 @@
 {"n_decisions": 21, "n_verified": 20, "n_pending": 1, "n_samples": 34, "win_rate": 0.4412, "avg_excess": -0.0072, "asof": "2026-09-28", "time": "2026-09-29 00:40:47"}
 {"n_decisions": 21, "n_verified": 20, "n_pending": 1, "n_samples": 34, "win_rate": 0.4412, "avg_excess": -0.0072, "asof": "2026-09-28", "time": "2026-09-29 00:52:17"}
 {"n_decisions": 21, "n_verified": 20, "n_pending": 1, "n_samples": 35, "win_rate": 0.4571, "avg_excess": -0.0054, "asof": "2026-09-29", "time": "2026-09-29 14:20:51"}
+{"n_decisions": 23, "n_verified": 20, "n_pending": 3, "n_samples": 35, "win_rate": 0.4571, "avg_excess": -0.0054, "asof": "2026-09-29", "time": "2026-09-29 19:53:03"}
