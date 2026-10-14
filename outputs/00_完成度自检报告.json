@@ -1,11 +1,12 @@
 {
-  "timestamp": "2026-10-14 13:29:00",
-  "completion": 89,
+  "timestamp": "2026-10-14 18:55:39",
+  "completion": 83,
   "total_checks": 18,
-  "passed": 16,
+  "passed": 15,
   "missing": [
     "决策是否全部通过交易前规则校验",
-    "人工判断是否已确认（confirmations.csv）"
+    "人工判断是否已确认（confirmations.csv）",
+    "每两周至少1笔有效交易（首月内）"
   ],
   "ready_for_submission": false,
   "detail": [
@@ -75,7 +76,7 @@
     },
     {
       "check": "每两周至少1笔有效交易（首月内）",
-      "ok": true
+      "ok": false
     },
     {
       "check": "单只持仓未超过30%",
