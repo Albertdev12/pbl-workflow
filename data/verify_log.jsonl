@@ -238,3 +238,4 @@
 {"n_decisions": 29, "n_verified": 29, "n_pending": 0, "n_samples": 80, "win_rate": 0.5, "avg_excess": -0.0006, "asof": "2026-11-05", "time": "2026-11-05 22:51:23"}
 {"n_decisions": 29, "n_verified": 29, "n_pending": 0, "n_samples": 80, "win_rate": 0.5, "avg_excess": -0.0006, "asof": "2026-11-05", "time": "2026-11-06 00:22:56"}
 {"n_decisions": 29, "n_verified": 29, "n_pending": 0, "n_samples": 80, "win_rate": 0.5, "avg_excess": -0.0006, "asof": "2026-11-05", "time": "2026-11-06 00:37:27"}
+{"n_decisions": 29, "n_verified": 29, "n_pending": 0, "n_samples": 81, "win_rate": 0.5062, "avg_excess": 0.0005, "asof": "2026-11-06", "time": "2026-11-06 15:28:34"}
